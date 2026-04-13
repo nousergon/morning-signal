@@ -14,9 +14,7 @@ Usage:
 
 Requires:
     ANTHROPIC_API_KEY  — for script generation
-    OPENAI_API_KEY     — for TTS (default)
-    ELEVENLABS_API_KEY — for TTS (if configured)
-    AWS credentials    — for S3 publish (via env, ~/.aws/credentials, or IAM role)
+    AWS credentials    — for Polly TTS + S3 publish (via env, ~/.aws/credentials, or IAM role)
 """
 
 import argparse
@@ -103,67 +101,47 @@ def generate_script(config: dict, date_str: str) -> str:
 
 # ── TTS ─────────────────────────────────────────────────────────────────────
 
-def tts_openai(script: str, output_path: Path, config: dict) -> None:
-    from openai import OpenAI
+def tts_polly(script: str, output_path: Path, config: dict) -> None:
+    """Synthesize speech via Amazon Polly. Uses existing AWS credentials."""
+    import boto3
 
     tts_cfg = config.get("tts", {})
-    model = tts_cfg.get("openai_model", "tts-1-hd")
-    voice = tts_cfg.get("openai_voice", "onyx")
+    voice_id = tts_cfg.get("polly_voice", "Matthew")
+    engine = tts_cfg.get("polly_engine", "neural")
+    region = config.get("s3_region", "us-west-2")
 
-    client = OpenAI()
-    log.info(f"TTS: OpenAI {model}, voice={voice}")
+    polly = boto3.client("polly", region_name=region)
+    log.info(f"TTS: Polly engine={engine}, voice={voice_id}")
 
-    max_chunk = 4096
+    # Polly limit: 3000 chars per request for neural engine
+    max_chunk = 2900
     chunks = _chunk_text(script, max_chunk)
+    log.info(f"Splitting into {len(chunks)} chunks...")
 
-    if len(chunks) == 1:
-        response = client.audio.speech.create(
-            model=model, voice=voice, input=chunks[0], response_format="mp3",
+    temp_files = []
+    for i, chunk in enumerate(chunks):
+        resp = polly.synthesize_speech(
+            Text=chunk,
+            OutputFormat="mp3",
+            VoiceId=voice_id,
+            Engine=engine,
         )
-        response.stream_to_file(str(output_path))
+        temp_path = output_path.parent / f"_chunk_{i:03d}.mp3"
+        with open(temp_path, "wb") as f:
+            f.write(resp["AudioStream"].read())
+        temp_files.append(temp_path)
+        log.info(f"  Chunk {i + 1}/{len(chunks)} done")
+
+    if len(temp_files) == 1:
+        temp_files[0].rename(output_path)
     else:
-        log.info(f"Splitting into {len(chunks)} chunks...")
-        temp_files = []
-        for i, chunk in enumerate(chunks):
-            temp_path = output_path.parent / f"_chunk_{i:03d}.mp3"
-            response = client.audio.speech.create(
-                model=model, voice=voice, input=chunk, response_format="mp3",
-            )
-            response.stream_to_file(str(temp_path))
-            temp_files.append(temp_path)
-            log.info(f"  Chunk {i + 1}/{len(chunks)} done")
         _concat_mp3s(temp_files, output_path)
         for f in temp_files:
             f.unlink(missing_ok=True)
 
-    log.info(f"Audio: {output_path.name} ({output_path.stat().st_size / 1024:.0f} KB)")
-
-
-def tts_elevenlabs(script: str, output_path: Path, config: dict) -> None:
-    import httpx
-
-    tts_cfg = config.get("tts", {})
-    voice_id = tts_cfg.get("elevenlabs_voice_id", "pNInz6obpgDQGcFmaJgB")
-    api_key = os.environ.get("ELEVENLABS_API_KEY")
-    if not api_key:
-        log.error("ELEVENLABS_API_KEY not set")
-        sys.exit(1)
-
-    log.info(f"TTS: ElevenLabs voice={voice_id}")
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
-    payload = {
-        "text": script,
-        "model_id": "eleven_turbo_v2_5",
-        "voice_settings": {"stability": 0.6, "similarity_boost": 0.75, "style": 0.3},
-    }
-
-    with httpx.stream("POST", url, headers=headers, json=payload, timeout=120) as resp:
-        resp.raise_for_status()
-        with open(output_path, "wb") as f:
-            for chunk in resp.iter_bytes():
-                f.write(chunk)
+    speed = tts_cfg.get("speed", 1.0)
+    if speed != 1.0:
+        _adjust_speed(output_path, speed)
 
     log.info(f"Audio: {output_path.name} ({output_path.stat().st_size / 1024:.0f} KB)")
 
@@ -242,6 +220,21 @@ def _concat_mp3s(files: list[Path], output: Path) -> None:
             out.write(f.read_bytes())
 
 
+def _adjust_speed(path: Path, speed: float) -> None:
+    """Change playback speed without altering pitch using ffmpeg atempo filter."""
+    import subprocess
+
+    log.info(f"Adjusting speed to {speed}x...")
+    tmp = path.with_suffix(".tmp.mp3")
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(path), "-filter:a", f"atempo={speed}",
+         "-vn", str(tmp)],
+        capture_output=True, check=True,
+    )
+    tmp.replace(path)
+    log.info(f"Speed adjusted to {speed}x")
+
+
 def save_script(script: str, date_str: str) -> Path:
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     path = SCRIPTS_DIR / f"{date_str}.md"
@@ -285,11 +278,7 @@ def main():
         audio_path = None
         if not args.script_only:
             audio_path = EPISODES_DIR / f"{args.date}.mp3"
-            provider = config.get("tts", {}).get("provider", "openai")
-            if provider == "elevenlabs":
-                tts_elevenlabs(script, audio_path, config)
-            else:
-                tts_openai(script, audio_path, config)
+            tts_polly(script, audio_path, config)
 
         save_metadata(args.date, script_path, audio_path)
 
