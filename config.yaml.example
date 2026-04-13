@@ -1,0 +1,41 @@
+# Morning Signal — Configuration
+# Copy to config.yaml and edit for your environment.
+
+# ── S3 / Hosting ────────────────────────────────────────────────────────────
+# The S3 bucket where episodes + feed are published.
+# Set up with public read access or CloudFront (see README).
+s3_bucket: "your-bucket-name"
+s3_region: "us-west-2"
+s3_prefix: ""  # optional subfolder, e.g. "podcast/"
+
+# The public base URL where your files are served.
+# If using CloudFront: https://d1234abcd.cloudfront.net
+# If using S3 static hosting: https://your-bucket-name.s3.us-west-2.amazonaws.com
+base_url: "https://your-bucket-name.s3.us-west-2.amazonaws.com"
+
+# ── Podcast Metadata (Apple Podcasts / RSS) ─────────────────────────────────
+podcast:
+  title: "Morning Signal"
+  description: "A sharp daily briefing on markets, tech, AI, and Seattle — auto-generated every morning."
+  author: ""
+  email: ""  # optional, for iTunes owner tag
+  language: "en-us"
+  category: "Business"
+  subcategory: "Investing"
+  explicit: false
+  artwork: "artwork.jpg"  # 3000x3000 recommended. Place in project root.
+
+# ── TTS ─────────────────────────────────────────────────────────────────────
+tts:
+  provider: "openai"       # "openai" or "elevenlabs"
+  openai_model: "tts-1-hd"
+  openai_voice: "onyx"     # onyx = deep/warm, alloy = neutral, echo = mid-range
+  elevenlabs_voice_id: "pNInz6obpgDQGcFmaJgB"  # "Adam"
+
+# ── Generation ──────────────────────────────────────────────────────────────
+claude_model: "claude-sonnet-4-20250514"
+max_tokens: 4096
+
+# Max episodes to keep in the RSS feed (older episodes remain in S3 but
+# drop off the feed to keep it lightweight).
+feed_max_episodes: 90

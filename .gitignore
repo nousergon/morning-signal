@@ -1,0 +1,24 @@
+# Secrets & credentials
+.env
+.env.*
+
+# Config with real values (use config.yaml.example as template)
+config.yaml
+
+# LLM prompt (proprietary)
+prompt.md
+
+# Generated content
+episodes/
+scripts/
+feed.xml
+artwork.jpg
+cron.log
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
