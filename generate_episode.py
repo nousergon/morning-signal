@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,12 +37,84 @@ EPISODES_DIR = BASE_DIR / "episodes"
 SCRIPTS_DIR = BASE_DIR / "scripts"
 FEED_FILE = BASE_DIR / "feed.xml"
 
+# AWS session used for all boto3 clients. None means "use default credential chain"
+# (which on the Mac is ~/.aws/credentials, and on the EC2 is the instance profile).
+# When MORNING_SIGNAL_RUNNER_ROLE_ARN is set, this gets replaced with an
+# AssumeRole-derived Session via _load_runner_session().
+_AWS_SESSION = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("morning-signal")
+
+
+# ── AWS Session + SSM Loading ───────────────────────────────────────────────
+
+def _aws_client(service: str, **kwargs):
+    """Get a boto3 client, routing through the runner-role session if one was assumed."""
+    if _AWS_SESSION is not None:
+        return _AWS_SESSION.client(service, **kwargs)
+    import boto3
+    return boto3.client(service, **kwargs)
+
+
+def _load_runner_session():
+    """If MORNING_SIGNAL_RUNNER_ROLE_ARN is set, AssumeRole and return a Session.
+
+    Returns None for the Mac dev path (env var unset) → boto3 falls back to
+    the default credential chain.
+    """
+    role_arn = os.environ.get("MORNING_SIGNAL_RUNNER_ROLE_ARN")
+    if not role_arn:
+        return None
+    import boto3
+    sts = boto3.client("sts")
+    session_name = f"morning-signal-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+    log.info(f"AssumeRole: {role_arn} (session={session_name})")
+    creds = sts.assume_role(RoleArn=role_arn, RoleSessionName=session_name)["Credentials"]
+    return boto3.Session(
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+    )
+
+
+def _maybe_load_from_ssm():
+    """If MORNING_SIGNAL_USE_SSM=1, fetch config + prompt + Anthropic key from SSM
+    and override CONFIG_FILE / PROMPT_FILE / ANTHROPIC_API_KEY env var.
+
+    No-op on the Mac dev path (env var unset) → local files used.
+    """
+    if os.environ.get("MORNING_SIGNAL_USE_SSM") != "1":
+        return
+
+    global CONFIG_FILE, PROMPT_FILE
+
+    ssm_region = os.environ.get("MORNING_SIGNAL_SSM_REGION", "us-east-1")
+    ssm = _aws_client("ssm", region_name=ssm_region)
+
+    def fetch(name: str) -> str:
+        return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="morning-signal-"))
+    tmpdir.chmod(0o700)
+
+    config_path = tmpdir / "config.yaml"
+    prompt_path = tmpdir / "prompt.md"
+    config_path.write_text(fetch("/morning-signal/config-yaml"))
+    prompt_path.write_text(fetch("/morning-signal/prompt-md"))
+    config_path.chmod(0o600)
+    prompt_path.chmod(0o600)
+    CONFIG_FILE = config_path
+    PROMPT_FILE = prompt_path
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ["ANTHROPIC_API_KEY"] = fetch("/morning-signal/anthropic-api-key")
+
+    log.info(f"SSM: loaded config + prompt + Anthropic key (tmpdir={tmpdir})")
 
 
 def load_config() -> dict:
@@ -103,14 +176,12 @@ def generate_script(config: dict, date_str: str) -> str:
 
 def tts_polly(script: str, output_path: Path, config: dict) -> None:
     """Synthesize speech via Amazon Polly. Uses existing AWS credentials."""
-    import boto3
-
     tts_cfg = config.get("tts", {})
     voice_id = tts_cfg.get("polly_voice", "Matthew")
     engine = tts_cfg.get("polly_engine", "neural")
     region = config.get("s3_region", "us-west-2")
 
-    polly = boto3.client("polly", region_name=region)
+    polly = _aws_client("polly", region_name=region)
     log.info(f"TTS: Polly engine={engine}, voice={voice_id}")
 
     # Polly limit: 3000 chars per request for neural engine
@@ -150,15 +221,13 @@ def tts_polly(script: str, output_path: Path, config: dict) -> None:
 
 def publish_to_s3(config: dict) -> None:
     """Upload episodes + feed.xml + artwork to S3."""
-    import boto3
-
     bucket = config["s3_bucket"]
     region = config.get("s3_region", "us-west-2")
     prefix = config.get("s3_prefix", "").strip("/")
     if prefix:
         prefix += "/"
 
-    s3 = boto3.client("s3", region_name=region)
+    s3 = _aws_client("s3", region_name=region)
 
     def upload(local_path: Path, s3_key: str, content_type: str):
         log.info(f"  -> s3://{bucket}/{s3_key}")
@@ -265,6 +334,10 @@ def main():
     parser.add_argument("--publish-only", action="store_true",
                         help="Rebuild feed and re-publish existing episodes")
     args = parser.parse_args()
+
+    global _AWS_SESSION
+    _AWS_SESSION = _load_runner_session()
+    _maybe_load_from_ssm()
 
     config = load_config()
     EPISODES_DIR.mkdir(parents=True, exist_ok=True)
