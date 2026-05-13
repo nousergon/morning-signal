@@ -221,8 +221,14 @@ def tts_polly(script: str, output_path: Path, config: dict) -> None:
 
 # ── S3 Publishing ───────────────────────────────────────────────────────────
 
-def publish_to_s3(config: dict) -> None:
-    """Upload episodes + feed.xml + artwork to S3."""
+def publish_to_s3(config: dict, fresh_uploads: set | None = None) -> None:
+    """Upload episodes + feed.xml + artwork to S3.
+
+    fresh_uploads is a set of MP3 filenames that were generated in this run
+    and must always be uploaded (overwriting any existing S3 object). HEAD-skip
+    only applies to historical MP3s not in this set.
+    """
+    fresh_uploads = fresh_uploads or set()
     bucket = config["s3_bucket"]
     region = config.get("s3_region", "us-west-2")
     prefix = config.get("s3_prefix", "").strip("/")
@@ -240,9 +246,15 @@ def publish_to_s3(config: dict) -> None:
 
     log.info(f"Publishing to s3://{bucket}/{prefix}...")
 
-    # Upload episode MP3s (only new ones — check if exists)
+    # Upload episode MP3s. Fresh-this-run files always overwrite; older files
+    # HEAD-skip if S3 already has them (avoids re-uploading the back-catalog
+    # on every run).
     for mp3 in sorted(EPISODES_DIR.glob("*.mp3")):
         s3_key = f"{prefix}episodes/{mp3.name}"
+        if mp3.name in fresh_uploads:
+            log.info(f"  ~~ {mp3.name} (fresh — overwriting)")
+            upload(mp3, s3_key, "audio/mpeg")
+            continue
         try:
             s3.head_object(Bucket=bucket, Key=s3_key)
             log.info(f"  == {mp3.name} (already uploaded)")
@@ -381,6 +393,18 @@ def _notify_failure(args, config: dict, exc: BaseException, traceback_str: str) 
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
+def _existing_episode(date_str: str) -> bool:
+    """True if a complete episode already exists for this date (JSON + audio_file ref)."""
+    meta_path = EPISODES_DIR / f"{date_str}.json"
+    if not meta_path.exists():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    return bool(meta.get("audio_file"))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Morning Signal podcast generator")
     parser.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"))
@@ -390,6 +414,8 @@ def main():
                         help="Generate locally, skip S3")
     parser.add_argument("--publish-only", action="store_true",
                         help="Rebuild feed and re-publish existing episodes")
+    parser.add_argument("--force", action="store_true",
+                        help="Force regenerate + re-upload even if episode already exists")
     args = parser.parse_args()
 
     global _AWS_SESSION
@@ -400,7 +426,13 @@ def main():
     EPISODES_DIR.mkdir(parents=True, exist_ok=True)
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Front-door dedup: don't re-burn Claude+Polly+S3 on accidental re-runs.
+    if not args.publish_only and not args.force and _existing_episode(args.date):
+        log.info(f"Episode {args.date} already exists; skipping (use --force to regenerate).")
+        return
+
     audio_path = None
+    fresh_uploads: set[str] = set()
     try:
         if not args.publish_only:
             # Generate
@@ -410,12 +442,13 @@ def main():
             if not args.script_only:
                 audio_path = EPISODES_DIR / f"{args.date}.mp3"
                 tts_polly(script, audio_path, config)
+                fresh_uploads.add(audio_path.name)
 
             save_metadata(args.date, script_path, audio_path)
 
         # Publish
         if not args.script_only and not args.no_publish:
-            publish_to_s3(config)
+            publish_to_s3(config, fresh_uploads=fresh_uploads)
 
         log.info("Done.")
     except BaseException as exc:

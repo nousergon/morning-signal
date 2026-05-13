@@ -118,11 +118,14 @@ def generate_feed(
         audio_local = Path(meta["audio_file"])
         file_size = audio_local.stat().st_size if audio_local.exists() else 0
 
-        # Duration estimate: ~150 words/min spoken, ~5 chars/word
+        # Duration estimate: ~150 words/min spoken, divided by the TTS speed
+        # multiplier (ffmpeg atempo compresses the audio). Without this divisor
+        # podcast apps show 1.5x the real playback length.
         duration_secs = 0
         if script_path.exists():
             word_count = len(script_path.read_text().split())
-            duration_secs = int(word_count / 150 * 60)
+            speed = float(config.get("tts", {}).get("speed", 1.0)) or 1.0
+            duration_secs = int(word_count / 150 * 60 / speed)
 
         # Build <item>
         item = ET.SubElement(channel, "item")
