@@ -16,6 +16,7 @@ units don't need to change.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,55 @@ from typing import Optional
 import typer
 
 from morning_signal import __version__
+
+
+# Paths the CLI auto-loads env vars from, in order. Earlier entries take
+# precedence (the first hit for a given key wins). `~/.config/morning-signal/.env`
+# is where the init wizard persists the Anthropic key.
+_ENV_FILE_PATHS = (
+    Path.cwd() / ".env",
+    Path.home() / ".config" / "morning-signal" / ".env",
+)
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Minimal KEY=value parser. Ignores comments + blank lines; strips
+    surrounding quotes. Does NOT support multiline values or variable
+    interpolation — keep your .env files simple.
+    """
+    pairs: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if value and value[0] in ("'", '"') and value[-1] == value[0]:
+            value = value[1:-1]
+        if key:
+            pairs[key] = value
+    return pairs
+
+
+def _load_env_files() -> None:
+    """Populate os.environ from .env files for the local-CLI path.
+
+    Skipped when MORNING_SIGNAL_USE_SSM=1 (production hosts get their secrets
+    from SSM; .env files shouldn't override that). Existing env vars are never
+    overwritten — explicit env > file fallback.
+    """
+    if os.environ.get("MORNING_SIGNAL_USE_SSM") == "1":
+        return
+    for env_path in _ENV_FILE_PATHS:
+        if not env_path.exists():
+            continue
+        try:
+            for key, value in _parse_env_file(env_path).items():
+                os.environ.setdefault(key, value)
+        except OSError:
+            # Permissions or read errors shouldn't crash the CLI; just skip.
+            continue
 
 app = typer.Typer(
     name="morning-signal",
@@ -192,6 +242,7 @@ def main() -> None:
     like --date / --script-only / etc.), transparently dispatch to `generate`
     so existing systemd/launchd units stay working.
     """
+    _load_env_files()
     if _is_legacy_invocation(sys.argv):
         # Insert 'generate' as the subcommand so typer routes correctly.
         sys.argv = [sys.argv[0], "generate", *sys.argv[1:]]
