@@ -1,6 +1,6 @@
 # Morning Signal
 
-Auto-generated daily briefing podcast. A cron job fires at 5am, Claude writes the script using live web search, OpenAI converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in Apple Podcasts (or any podcast app) and episodes just show up on your phone.
+Auto-generated daily briefing podcast. A cron job fires at 5am, Claude writes the script using live web search, Amazon Polly converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in Apple Podcasts (or any podcast app) and episodes just show up on your phone.
 
 ## How It Works
 
@@ -9,7 +9,7 @@ Auto-generated daily briefing podcast. A cron job fires at 5am, Claude writes th
   │
   ├─ 1. Read prompt.md (your editable production prompt)
   ├─ 2. Call Claude + web search → generate script
-  ├─ 3. Call OpenAI TTS → generate MP3
+  ├─ 3. Call Amazon Polly TTS → generate MP3
   ├─ 4. Upload MP3 + regenerate RSS feed → S3
   │
   └─ Episode appears in your podcast app
@@ -39,14 +39,13 @@ cd morning-signal
 pip install -r requirements.txt
 ```
 
-### 2. Set API keys
+### 2. Set API key
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
 ```
 
-Or add to `~/.bashrc` / `~/.zshrc` for persistence.
+Or add to `~/.bashrc` / `~/.zshrc` for persistence. AWS credentials are used for both Polly TTS and S3 — configure via `aws configure` or environment variables.
 
 ### 3. Create the S3 bucket
 
@@ -178,9 +177,9 @@ This is the system prompt sent to Claude. Edit it freely:
 | Component | Per Episode | Monthly (30 days) |
 |-----------|-------------|-------------------|
 | Claude Sonnet + web search | ~$0.03 | ~$0.90 |
-| OpenAI TTS-HD (~10K chars) | ~$0.15 | ~$4.50 |
+| Amazon Polly neural (~8K chars) | ~$0.03 | ~$0.90 |
 | S3 storage + transfer | ~$0.01 | ~$0.30 |
-| **Total** | **~$0.19** | **~$5.70** |
+| **Total** | **~$0.07** | **~$2.10** |
 
 ## Troubleshooting
 
@@ -197,7 +196,7 @@ sudo service cron start    # start it
 - Overcast and Pocket Casts are usually faster
 
 **TTS chunking artifacts:**
-If you hear slight pauses at chunk boundaries (scripts >4096 chars), this is because OpenAI's TTS API has a per-request character limit and chunks are concatenated. ElevenLabs handles longer inputs natively and may sound smoother for long episodes.
+If you hear slight pauses at chunk boundaries, this is because Polly's neural engine has a 3000-char per-request limit and chunks are concatenated. Try adjusting the voice or engine in `config.yaml`.
 
 **Re-publish everything:**
 ```bash

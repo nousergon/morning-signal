@@ -25,12 +25,10 @@ podcast:
   explicit: false
   artwork: "artwork.jpg"  # 3000x3000 recommended. Place in project root.
 
-# ── TTS ─────────────────────────────────────────────────────────────────────
+# ── TTS (Amazon Polly — uses existing AWS credentials) ──────────────────────
 tts:
-  provider: "openai"       # "openai" or "elevenlabs"
-  openai_model: "tts-1-hd"
-  openai_voice: "onyx"     # onyx = deep/warm, alloy = neutral, echo = mid-range
-  elevenlabs_voice_id: "pNInz6obpgDQGcFmaJgB"  # "Adam"
+  polly_voice: "Matthew"   # Matthew = deep/warm, Joanna = female, Stephen = British
+  polly_engine: "neural"   # "neural" (best quality) or "standard"
 
 # ── Generation ──────────────────────────────────────────────────────────────
 claude_model: "claude-sonnet-4-20250514"
