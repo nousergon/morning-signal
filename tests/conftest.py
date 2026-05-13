@@ -9,8 +9,8 @@ from typing import Iterator
 
 import pytest
 
-# Make the repo root importable so `import generate_episode` works
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Make the package importable when running from a fresh clone without editable install
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 
 @pytest.fixture
@@ -85,12 +85,27 @@ def sample_config() -> dict:
 
 @pytest.fixture
 def fresh_ge_module(monkeypatch, tmp_episodes_dir, tmp_scripts_dir):
-    """Reload generate_episode with EPISODES_DIR / SCRIPTS_DIR pointed at tmp paths."""
-    import importlib
-    import generate_episode
+    """Reload morning_signal.episode with EPISODES_DIR / SCRIPTS_DIR pointed at tmp paths.
 
-    importlib.reload(generate_episode)
-    monkeypatch.setattr(generate_episode, "EPISODES_DIR", tmp_episodes_dir)
-    monkeypatch.setattr(generate_episode, "SCRIPTS_DIR", tmp_scripts_dir)
-    monkeypatch.setattr(generate_episode, "_AWS_SESSION", None)
-    yield generate_episode
+    The fixture name stays as 'fresh_ge_module' for continuity with the old
+    pre-package layout — tests carry over with one rename.
+    """
+    import importlib
+    from morning_signal import aws as _aws_mod
+    from morning_signal import config as _config_mod
+    from morning_signal import episode as _episode_mod
+
+    importlib.reload(_config_mod)
+    importlib.reload(_aws_mod)
+    importlib.reload(_episode_mod)
+
+    # Tests historically read paths + AWS session off the same module they reload.
+    # Mirror that surface on the episode module so existing tests work unchanged.
+    monkeypatch.setattr(_config_mod, "EPISODES_DIR", tmp_episodes_dir)
+    monkeypatch.setattr(_config_mod, "SCRIPTS_DIR", tmp_scripts_dir)
+    monkeypatch.setattr(_episode_mod, "EPISODES_DIR", tmp_episodes_dir, raising=False)
+    monkeypatch.setattr(_episode_mod, "SCRIPTS_DIR", tmp_scripts_dir, raising=False)
+    monkeypatch.setattr(_aws_mod, "_AWS_SESSION", None)
+    # Convenience: keep _AWS_SESSION readable from the episode module too.
+    monkeypatch.setattr(_episode_mod, "_AWS_SESSION", None, raising=False)
+    yield _episode_mod

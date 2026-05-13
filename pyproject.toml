@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "morning-signal"
+dynamic = ["version"]
+description = "Auto-generated daily briefing podcast: Claude + web search → script → Polly TTS → S3 + RSS"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [
+    { name = "Brian McMahon" },
+]
+keywords = ["podcast", "claude", "anthropic", "polly", "rss", "tts", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+]
+dependencies = [
+    "anthropic>=0.40.0",
+    "boto3>=1.35.0",
+    "pyyaml>=6.0",
+    "typer>=0.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "moto[ses,s3,sts,ssm]>=5.0.0",
+]
+
+[project.scripts]
+morning-signal = "morning_signal.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/cipher813/morning-signal"
+Repository = "https://github.com/cipher813/morning-signal"
+Issues = "https://github.com/cipher813/morning-signal/issues"
+
+[tool.hatch.version]
+path = "src/morning_signal/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/morning_signal"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/morning_signal",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]

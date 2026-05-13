@@ -29,6 +29,7 @@ htmlcov/
 # Internal planning docs (not for public repo)
 ROADMAP.md
 implementation-plan-*.md
+private/
 
 # IAM policy staging (review before applying; final JSONs version-tracked in alpha-engine-config/private-docs/morning-signal/iam/)
 .iam-staging/
