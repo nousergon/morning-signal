@@ -39,13 +39,27 @@ max_tokens: 8192
 # drop off the feed to keep it lightweight).
 feed_max_episodes: 90
 
-# ── Notifications (optional, via SES) ───────────────────────────────────────
-# When enabled, sends a one-line success email after each successful run
-# and a multi-line failure email with traceback on uncaught exception.
-# `sender` must be a verified SES identity in your AWS account; in SES
-# sandbox mode the `recipients` must also be verified.
+# ── Notifications (optional, via Telegram / flow-doctor) ───────────────────
+# When enabled, sends a one-line success ping after each successful run
+# and a failure ping with traceback on any uncaught exception, both
+# routed via flow-doctor's TelegramNotifier to a single bot + chat
+# (optional forum topic).
+#
+# Setup (two minutes):
+#   1. Message @BotFather → /newbot → save the bot token.
+#   2. Add the bot to your chat (or create a fresh group / supergroup).
+#   3. Send the bot a message, then look up the chat_id at
+#      https://api.telegram.org/bot<TOKEN>/getUpdates and read
+#      result[0].message.chat.id (negative integer for groups /
+#      supergroups / channels).
+#   4. Set FLOW_DOCTOR_TELEGRAM_BOT_TOKEN + FLOW_DOCTOR_TELEGRAM_CHAT_ID
+#      in the env, OR inline the values under telegram_* below.
+#
+# Forum supergroups: optional `telegram_message_thread_id` routes
+# notifications to a specific topic in the group — handy for fanning
+# am / pm / other-flow alerts through one chat without N bots.
 notifications:
   enabled: false
-  sender: ""
-  recipients: []
-  ses_region: "us-east-1"
+  telegram_bot_token: ""              # or set FLOW_DOCTOR_TELEGRAM_BOT_TOKEN in env
+  telegram_chat_id: ""                # or set FLOW_DOCTOR_TELEGRAM_CHAT_ID in env
+  telegram_message_thread_id: null    # optional: forum-topic routing

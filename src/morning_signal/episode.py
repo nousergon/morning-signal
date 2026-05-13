@@ -13,7 +13,7 @@ from pathlib import Path
 from morning_signal import aws as _aws
 from morning_signal import config as _config
 from morning_signal.claude import generate_script
-from morning_signal.notify import _notify_failure, _notify_success
+from morning_signal.notify import make_doctor, notify_success
 from morning_signal.publish import publish_to_s3
 from morning_signal.tts import tts_polly
 
@@ -74,7 +74,7 @@ def _default_edition() -> str:
 from morning_signal.aws import _aws_client, _load_runner_session, _maybe_load_from_ssm  # noqa: E402,F401
 from morning_signal.claude import EDITION_LABELS, generate_script  # noqa: E402,F401
 from morning_signal.config import load_config, load_prompt  # noqa: E402,F401
-from morning_signal.notify import _notify_failure, _notify_success, _send_ses  # noqa: E402,F401
+from morning_signal.notify import make_doctor, notify_success  # noqa: E402,F401
 from morning_signal.publish import publish_to_s3  # noqa: E402,F401
 from morning_signal.tts import _adjust_speed, _chunk_text, _concat_mp3s, tts_polly  # noqa: E402,F401
 
@@ -165,8 +165,18 @@ def main():
     fresh_uploads: set[str] = set()
     started = datetime.now()
     progress = _make_progress()
+
+    # Build the flow-doctor that routes failure + healthy-completion
+    # pings through Telegram. Returns (None, None) when notifications
+    # are disabled or the Telegram creds aren't resolvable; in that
+    # case ``doctor.guard()`` becomes a nullcontext and the success
+    # ping no-ops, matching the pre-flow-doctor behaviour.
+    doctor, success_notifier = make_doctor(config, args.edition)
+    from contextlib import nullcontext
+    guard = doctor.guard() if doctor is not None else nullcontext()
+
     try:
-        with progress:
+        with guard, progress:
             phase = progress.add_task("[bold blue]Initializing", total=None)
             if not args.publish_only:
                 progress.update(phase, description="[bold blue]Generating script (Claude + web search)")
@@ -190,15 +200,16 @@ def main():
         elapsed = (datetime.now() - started).total_seconds()
         log.info(f"Done in {elapsed:.0f}s.")
     except BaseException as exc:
-        import traceback
-        tb = traceback.format_exc()
+        # doctor.guard() already filed the failure report via Telegram
+        # before re-raising; we keep the local log line for journalctl
+        # / systemd visibility and re-raise to preserve exit-code
+        # semantics for the cron-runner.
         log.error(f"FAILED: {type(exc).__name__}: {exc}")
-        _notify_failure(args, config, exc, tb)
         raise
 
     # Success — notify only for full pipeline runs (not script-only / publish-only)
     if not args.script_only and not args.publish_only:
-        _notify_success(args, config, audio_path)
+        notify_success(success_notifier, args, config, audio_path)
 
 
 # Shared Console between Progress and the RichHandler logging in cli._setup_logging.

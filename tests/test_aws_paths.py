@@ -206,80 +206,9 @@ def test_publish_to_s3_uploads_missing_back_catalog(
     assert "episodes/2026-04-13-am.mp3" in keys
 
 
-# ── _send_ses + notifications ────────────────────────────────────────────────
-
-
-@mock_aws
-def test_send_ses_noop_when_disabled(fresh_ge_module, aws_env, sample_config):
-    sample_config["notifications"]["enabled"] = False
-    # Should not raise even though sender is missing
-    fresh_ge_module._send_ses("subject", "body", sample_config)
-
-
-@mock_aws
-def test_send_ses_warns_and_skips_when_sender_missing(
-    fresh_ge_module, aws_env, sample_config, caplog
-):
-    sample_config["notifications"]["sender"] = ""
-    fresh_ge_module._send_ses("subject", "body", sample_config)
-    assert any("missing" in r.message for r in caplog.records)
-
-
-@mock_aws
-def test_send_ses_actually_sends_via_moto(
-    fresh_ge_module, aws_env, sample_config
-):
-    """When enabled + sender/recipients set, an email should land in moto's SES outbox."""
-    ses = boto3.client("ses", region_name="us-east-1")
-    ses.verify_email_identity(EmailAddress="sender@example.com")
-
-    fresh_ge_module._send_ses("✓ Test", "body text", sample_config)
-
-    backend = ses.get_send_quota()
-    assert backend["SentLast24Hours"] >= 1
-
-
-@mock_aws
-def test_send_ses_swallows_exceptions(fresh_ge_module, aws_env, sample_config, caplog):
-    """SES failures must not crash the run — they only log."""
-    # No SES identity verified → real SES would 400. moto enforces this too.
-    fresh_ge_module._send_ses("✓ Test", "body text", sample_config)
-    assert any("SES send failed" in r.message for r in caplog.records)
-
-
-# ── _notify_success / _notify_failure smoke ──────────────────────────────────
-
-
-@mock_aws
-def test_notify_success_runs_without_audio_path(
-    fresh_ge_module, aws_env, sample_config, tmp_episodes_dir, tmp_scripts_dir
-):
-    """--script-only runs pass audio_path=None; notify must still work."""
-    ses = boto3.client("ses", region_name="us-east-1")
-    ses.verify_email_identity(EmailAddress="sender@example.com")
-
-    class FakeArgs:
-        date = "2026-05-14"
-        edition = "am"
-
-    fresh_ge_module._notify_success(FakeArgs(), sample_config, audio_path=None)
-    assert ses.get_send_quota()["SentLast24Hours"] >= 1
-
-
-@mock_aws
-def test_notify_failure_sends_traceback(
-    fresh_ge_module, aws_env, sample_config
-):
-    ses = boto3.client("ses", region_name="us-east-1")
-    ses.verify_email_identity(EmailAddress="sender@example.com")
-
-    class FakeArgs:
-        date = "2026-05-14"
-        edition = "pm"
-
-    try:
-        raise ValueError("synthetic test error")
-    except ValueError as exc:
-        import traceback
-        fresh_ge_module._notify_failure(FakeArgs(), sample_config, exc, traceback.format_exc())
-    assert ses.get_send_quota()["SentLast24Hours"] >= 1
+# SES-specific notifier tests retired in the 0.5.0rc3 Telegram cutover.
+# The notification transport is now flow-doctor's TelegramNotifier; its
+# behaviour (POST shape, target-id contract, never-raises semantics,
+# preflight) is covered in flow-doctor's own test suite. The morning-
+# signal layer's responsibility is the body-construction + main-loop
+# wiring, covered by tests/test_notify.py + tests/test_orchestration.py.
