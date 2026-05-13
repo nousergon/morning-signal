@@ -255,6 +255,34 @@ def test_main_failure_path_invokes_notify(
     assert notify_calls == [("2026-05-14", "am", "RuntimeError")]
 
 
+@mock_aws
+def test_main_dry_run_exits_before_api_calls(
+    fresh_ge_module, aws_env, tmp_episodes_dir, tmp_scripts_dir,
+    sample_config, monkeypatch, tmp_path, caplog,
+):
+    """--dry-run should report setup + exit without touching Claude / Polly / S3."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(json.dumps(sample_config))
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("# prompt")
+    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(_config, "PROMPT_FILE", prompt)
+
+    called = []
+    monkeypatch.setattr(fresh_ge_module, "generate_script", lambda *a, **kw: called.append("claude"))
+    monkeypatch.setattr(fresh_ge_module, "tts_polly", lambda *a, **kw: called.append("polly"))
+    monkeypatch.setattr(fresh_ge_module, "publish_to_s3", lambda *a, **kw: called.append("s3"))
+
+    monkeypatch.setattr(sys, "argv", [
+        "morning-signal", "--date", "2026-05-14", "--edition", "am", "--dry-run",
+    ])
+    with caplog.at_level("INFO"):
+        fresh_ge_module.main()
+
+    assert called == []  # no API calls
+    assert any("DRY RUN" in r.message for r in caplog.records)
+
+
 def test_main_default_edition_auto_detected(
     fresh_ge_module, sample_config, tmp_episodes_dir, tmp_scripts_dir,
     monkeypatch, tmp_path

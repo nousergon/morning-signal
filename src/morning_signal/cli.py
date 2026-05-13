@@ -89,6 +89,9 @@ def _setup_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+    # Quiet anthropic's httpx INFO line so the progress bar isn't competing.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("anthropic").setLevel(logging.WARNING)
 
 
 @app.command()
