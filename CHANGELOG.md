@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc3] — 2026-05-13
+
+### Added
+- **`--dry-run` flag on `morning-signal generate`.** Validates setup (config + prompt readability, Anthropic key presence, AWS credential resolution, output paths) without making any Claude / Polly / S3 calls. Useful for post-`init` sanity checks and CI smoke. (+1 test)
+- **TTY-aware progress display during generation.** When `morning-signal generate` runs in an interactive terminal, a `rich.progress` spinner shows the current phase (`Generating script (Claude + web search)` → `Synthesizing audio (Polly)` → `Publishing to S3` → `Done`) with elapsed-time counter. Non-TTY contexts (systemd journal, cron output) keep the existing verbose log lines unchanged.
+- Final log line now reports total elapsed seconds: `Done in 72s.`
+
+### Changed
+- `httpx` and `anthropic` SDK loggers raised from INFO to WARNING. The raw `HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"` line was visual noise next to the new progress bar.
+
 ## [0.1.1rc2] — 2026-05-13
 
 ### Fixed
@@ -48,7 +58,8 @@ First public release on PyPI.
 - Requires Python 3.9+.
 - License: MIT.
 
-[Unreleased]: https://github.com/cipher813/morning-signal/compare/v0.1.1rc2...HEAD
+[Unreleased]: https://github.com/cipher813/morning-signal/compare/v0.1.1rc3...HEAD
+[0.1.1rc3]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc3
 [0.1.1rc2]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc2
 [0.1.1rc1]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc1
 [0.1.0]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.0

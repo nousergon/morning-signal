@@ -102,6 +102,28 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'morning_signal.episode' has no attribute {name!r}")
 
 
+def _dry_run_report(config: dict, args) -> None:
+    """Print a setup-validation summary without making any API calls."""
+    import os
+    log.info(f"DRY RUN — would generate {args.edition.upper()} edition for {args.date}")
+    log.info(f"  Claude model:      {config.get('claude_model')}")
+    log.info(f"  Anthropic key:     {'set (' + str(len(os.environ.get('ANTHROPIC_API_KEY', ''))) + ' chars)' if os.environ.get('ANTHROPIC_API_KEY') else 'MISSING — wizard or env var needed'}")
+    log.info(f"  S3 bucket:         {config.get('s3_bucket')}")
+    log.info(f"  Feed base URL:     {config.get('base_url')}")
+    log.info(f"  TTS voice:         {config.get('tts', {}).get('polly_voice')} / {config.get('tts', {}).get('polly_engine')} / {config.get('tts', {}).get('speed')}x")
+    log.info(f"  Notifications:     {'enabled → ' + str(config.get('notifications', {}).get('recipients', [])) if config.get('notifications', {}).get('enabled') else 'disabled'}")
+    # AWS reach check (no boto3 call — just the credential resolution)
+    try:
+        import boto3
+        creds = boto3.Session().get_credentials()
+        log.info(f"  AWS creds:         {'found' if creds else 'NOT FOUND'}")
+    except Exception as e:
+        log.info(f"  AWS creds:         error checking: {e}")
+    log.info(f"  Output dir:        {_config.EPISODES_DIR}")
+    log.info(f"  Prompt:            {_config.PROMPT_FILE} ({_config.PROMPT_FILE.stat().st_size if _config.PROMPT_FILE.exists() else 0} bytes)")
+    log.info("Dry run complete — no API calls made, no files written.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Morning Signal podcast generator")
     parser.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"))
@@ -115,6 +137,8 @@ def main():
                         help="Rebuild feed and re-publish existing episodes")
     parser.add_argument("--force", action="store_true",
                         help="Force regenerate + re-upload even if episode already exists")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Validate setup (config, prompt, env, AWS creds) without making any API calls")
     args = parser.parse_args()
 
     if args.edition is None:
@@ -124,6 +148,11 @@ def main():
     _aws._maybe_load_from_ssm()
 
     config = _config.load_config()
+
+    if args.dry_run:
+        _dry_run_report(config, args)
+        return
+
     _config.EPISODES_DIR.mkdir(parents=True, exist_ok=True)
     _config.SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -134,24 +163,32 @@ def main():
 
     audio_path = None
     fresh_uploads: set[str] = set()
+    started = datetime.now()
+    progress = _make_progress()
     try:
-        if not args.publish_only:
-            # Generate
-            script = generate_script(config, args.date, args.edition)
-            script_path = save_script(script, args.date, args.edition)
+        with progress:
+            phase = progress.add_task("[bold blue]Initializing", total=None)
+            if not args.publish_only:
+                progress.update(phase, description="[bold blue]Generating script (Claude + web search)")
+                script = generate_script(config, args.date, args.edition)
+                script_path = save_script(script, args.date, args.edition)
 
-            if not args.script_only:
-                audio_path = _config.EPISODES_DIR / f"{_episode_stem(args.date, args.edition)}.mp3"
-                tts_polly(script, audio_path, config)
-                fresh_uploads.add(audio_path.name)
+                if not args.script_only:
+                    progress.update(phase, description="[bold blue]Synthesizing audio (Polly)")
+                    audio_path = _config.EPISODES_DIR / f"{_episode_stem(args.date, args.edition)}.mp3"
+                    tts_polly(script, audio_path, config)
+                    fresh_uploads.add(audio_path.name)
 
-            save_metadata(args.date, args.edition, script_path, audio_path)
+                save_metadata(args.date, args.edition, script_path, audio_path)
 
-        # Publish
-        if not args.script_only and not args.no_publish:
-            publish_to_s3(config, fresh_uploads=fresh_uploads)
+            if not args.script_only and not args.no_publish:
+                progress.update(phase, description="[bold blue]Publishing to S3")
+                publish_to_s3(config, fresh_uploads=fresh_uploads)
 
-        log.info("Done.")
+            progress.update(phase, description="[bold green]Done", completed=1)
+
+        elapsed = (datetime.now() - started).total_seconds()
+        log.info(f"Done in {elapsed:.0f}s.")
     except BaseException as exc:
         import traceback
         tb = traceback.format_exc()
@@ -162,3 +199,30 @@ def main():
     # Success — notify only for full pipeline runs (not script-only / publish-only)
     if not args.script_only and not args.publish_only:
         _notify_success(args, config, audio_path)
+
+
+def _make_progress():
+    """Build a rich.progress context manager for TTY output, or a no-op for
+    non-TTY (so systemd journal / cron logs stay clean plain text).
+    """
+    import sys
+    if not sys.stdout.isatty():
+        return _NullProgress()
+    try:
+        from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+        return Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            TimeElapsedColumn(),
+            transient=False,
+        )
+    except ImportError:
+        return _NullProgress()
+
+
+class _NullProgress:
+    """No-op stand-in for rich.Progress when running in non-TTY contexts."""
+    def __enter__(self): return self
+    def __exit__(self, *_): return False
+    def add_task(self, description: str, total=None): return 0
+    def update(self, *args, **kwargs): pass
