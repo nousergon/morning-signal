@@ -236,6 +236,35 @@ python generate_episode.py --publish-only
 python generate_episode.py --force
 ```
 
+## Releasing to PyPI
+
+The `.github/workflows/publish.yml` workflow runs on any push of a tag matching `v*.*.*`. It builds an sdist + wheel, validates them with `twine check`, then publishes to PyPI via OIDC **trusted publishing** (no API token in repo secrets).
+
+**One-time PyPI setup** (do this once on PyPI's web UI before tagging `v0.1.0`):
+
+1. Sign in at https://pypi.org/.
+2. Account → Publishing → "Add a new pending publisher".
+3. Fill in:
+   - PyPI project name: `morning-signal`
+   - Owner: `cipher813`
+   - Repository name: `morning-signal`
+   - Workflow filename: `publish.yml`
+   - Environment name: `pypi`
+4. Save.
+
+**Cutting a release:**
+
+```bash
+# 1. Bump __version__ in src/morning_signal/__init__.py (e.g., "0.1.0")
+# 2. Update CHANGELOG.md (move Unreleased entries into a dated version section)
+# 3. Commit + push the version bump to main
+# 4. Tag + push the tag — the workflow takes it from there
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Within ~2 minutes the package appears at https://pypi.org/project/morning-signal/ and `pip install morning-signal` works for anyone.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
