@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- 5 bundled prompt presets in `morning_signal/data/`: `generic-news`, `tech-only`, `markets-only`, `local-news`, `blank`. Init wizard offers them.
+- CodeQL workflow for weekly automated security scanning.
+- Dependabot config: weekly pip + GitHub Actions updates, grouped by AWS / tooling.
+- Branch protection on `main`: status checks required on Python 3.9–3.12, linear history enforced, no force-push, no deletion.
+- Tag protection ruleset for `v*.*.*`: tags are immutable (no deletion, no force-update).
+
 ## [0.1.0] — 2026-05-13
 
 First public release on PyPI.
