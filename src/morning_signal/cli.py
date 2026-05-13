@@ -84,12 +84,38 @@ app = typer.Typer(
 
 
 def _setup_logging() -> None:
+    """Configure logging. In TTY contexts, route through rich.logging.RichHandler
+    bound to the same Console as the Progress spinner — log lines render cleanly
+    above the spinner instead of butting up against its elapsed-time counter.
+    Non-TTY contexts (systemd journal, cron) keep the plain stdlib StreamHandler.
+    """
+    if sys.stdout.isatty():
+        try:
+            from rich.logging import RichHandler
+            from morning_signal.episode import _CONSOLE
+            handlers = [RichHandler(
+                console=_CONSOLE,
+                show_time=True,
+                show_path=False,
+                rich_tracebacks=True,
+                markup=False,
+            )]
+            fmt = "%(message)s"
+        except ImportError:
+            handlers = None
+            fmt = "%(asctime)s [%(levelname)s] %(message)s"
+    else:
+        handlers = None
+        fmt = "%(asctime)s [%(levelname)s] %(message)s"
+
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
+        format=fmt,
+        datefmt="[%H:%M:%S]",
+        handlers=handlers,
+        force=True,
     )
-    # Quiet anthropic's httpx INFO line so the progress bar isn't competing.
+    # Quiet anthropic's httpx INFO line so the progress region isn't noisy.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("anthropic").setLevel(logging.WARNING)
 
