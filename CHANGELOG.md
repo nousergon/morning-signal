@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc2] — 2026-05-13
+
+### Fixed
+- **`morning-signal generate` failed with `Could not resolve authentication method` when run via the init wizard's smoke test (and any other invocation that relied on `~/.config/morning-signal/.env` for the Anthropic key).** The wizard wrote the key file but the CLI never loaded it; the subprocess inherited a blank env. The CLI now auto-loads `./.env` and `~/.config/morning-signal/.env` at startup (CWD takes precedence). Loading is skipped under `MORNING_SIGNAL_USE_SSM=1` so production hosts continue getting secrets from SSM, and explicit env vars always win over file fallbacks. (+9 tests)
+
 ## [0.1.1rc1] — 2026-05-13
 
 Release-candidate cut for internal dogfooding before promoting to 0.1.1 stable.
@@ -43,6 +48,7 @@ First public release on PyPI.
 - Requires Python 3.9+.
 - License: MIT.
 
-[Unreleased]: https://github.com/cipher813/morning-signal/compare/v0.1.1rc1...HEAD
+[Unreleased]: https://github.com/cipher813/morning-signal/compare/v0.1.1rc2...HEAD
+[0.1.1rc2]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc2
 [0.1.1rc1]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc1
 [0.1.0]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.0
