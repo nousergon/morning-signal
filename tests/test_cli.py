@@ -108,6 +108,16 @@ def test_generate_no_flags_translates_cleanly(runner, monkeypatch):
     assert seen == [["morning-signal"]]
 
 
+def test_generate_dry_run_flag_forwarded(runner, monkeypatch):
+    """--dry-run must reach episode.main() through the typer argv translation."""
+    seen = []
+    monkeypatch.setattr("morning_signal.episode.main", lambda: seen.append(list(sys.argv)))
+    result = runner.invoke(app, ["generate", "--dry-run"])
+    assert result.exit_code == 0, result.stdout
+    assert seen, "episode.main was not invoked"
+    assert "--dry-run" in seen[0]
+
+
 # ── preview ──────────────────────────────────────────────────────────────────
 
 

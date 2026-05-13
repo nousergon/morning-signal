@@ -118,6 +118,10 @@ def generate(
     force: bool = typer.Option(
         False, "--force", help="Regenerate + re-upload even if the episode already exists."
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Validate setup (config + prompt + env + AWS creds) without any API calls.",
+    ),
 ) -> None:
     """Generate + publish today's episode."""
     _setup_logging()
@@ -139,6 +143,8 @@ def generate(
         argv.append("--publish-only")
     if force:
         argv.append("--force")
+    if dry_run:
+        argv.append("--dry-run")
 
     from morning_signal.episode import main as episode_main
     sys.argv = argv
