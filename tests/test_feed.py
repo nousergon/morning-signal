@@ -6,7 +6,7 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import feed as feed_module
+from morning_signal import feed as feed_module
 
 ITUNES = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 

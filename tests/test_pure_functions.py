@@ -82,14 +82,14 @@ def test_existing_episode_is_edition_scoped(fresh_ge_module, tmp_episodes_dir):
 
 def test_default_edition_morning(fresh_ge_module):
     fake_morning = datetime(2026, 5, 14, 6, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
-    with patch("generate_episode.datetime") as mock_dt:
+    with patch("morning_signal.episode.datetime") as mock_dt:
         mock_dt.now.return_value = fake_morning
         assert fresh_ge_module._default_edition() == "am"
 
 
 def test_default_edition_afternoon(fresh_ge_module):
     fake_afternoon = datetime(2026, 5, 14, 17, 30, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
-    with patch("generate_episode.datetime") as mock_dt:
+    with patch("morning_signal.episode.datetime") as mock_dt:
         mock_dt.now.return_value = fake_afternoon
         assert fresh_ge_module._default_edition() == "pm"
 
@@ -97,7 +97,7 @@ def test_default_edition_afternoon(fresh_ge_module):
 def test_default_edition_noon_boundary(fresh_ge_module):
     """12:00 PT should be 'pm' (hour >= 12)."""
     fake_noon = datetime(2026, 5, 14, 12, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
-    with patch("generate_episode.datetime") as mock_dt:
+    with patch("morning_signal.episode.datetime") as mock_dt:
         mock_dt.now.return_value = fake_noon
         assert fresh_ge_module._default_edition() == "pm"
 

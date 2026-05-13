@@ -11,6 +11,8 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from morning_signal import config as _config
+
 
 REGION = "us-west-2"
 
@@ -123,7 +125,7 @@ def test_generate_script_passes_edition_to_user_message(fresh_ge_module, tmp_pat
 
     anth_mock, client = _make_anthropic_mock("Today's script.")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
-         patch.object(fresh_ge_module, "PROMPT_FILE", prompt_path):
+         patch.object(_config, "PROMPT_FILE", prompt_path):
         out = fresh_ge_module.generate_script(
             {"claude_model": "claude-sonnet-4-6", "max_tokens": 100}, "2026-05-14", "am"
         )
@@ -143,7 +145,7 @@ def test_generate_script_exits_on_empty_response(fresh_ge_module, tmp_path):
 
     anth_mock, _ = _make_anthropic_mock(text="")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
-         patch.object(fresh_ge_module, "PROMPT_FILE", prompt_path):
+         patch.object(_config, "PROMPT_FILE", prompt_path):
         try:
             fresh_ge_module.generate_script(
                 {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
@@ -160,7 +162,7 @@ def test_generate_script_pm_edition_label(fresh_ge_module, tmp_path):
 
     anth_mock, client = _make_anthropic_mock("PM script.")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
-         patch.object(fresh_ge_module, "PROMPT_FILE", prompt_path):
+         patch.object(_config, "PROMPT_FILE", prompt_path):
         fresh_ge_module.generate_script(
             {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "pm"
         )
@@ -179,7 +181,7 @@ def test_main_dedup_skips_when_episode_exists(
     """Front-door dedup: if episode JSON exists with audio_file, return early."""
     cfg = tmp_path / "config.yaml"
     cfg.write_text(json.dumps(sample_config))  # JSON is valid YAML
-    monkeypatch.setattr(fresh_ge_module, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
     make_episode("2026-05-14", "am")
 
     monkeypatch.setattr(sys, "argv", ["generate_episode.py", "--date", "2026-05-14", "--edition", "am"])
@@ -198,8 +200,8 @@ def test_main_full_pipeline_script_only(
     cfg.write_text(json.dumps(sample_config))
     prompt = tmp_path / "prompt.md"
     prompt.write_text("# Test prompt")
-    monkeypatch.setattr(fresh_ge_module, "CONFIG_FILE", cfg)
-    monkeypatch.setattr(fresh_ge_module, "PROMPT_FILE", prompt)
+    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(_config, "PROMPT_FILE", prompt)
 
     anth_mock, _ = _make_anthropic_mock("Today's full briefing.")
     monkeypatch.setattr(sys, "argv", [
@@ -229,8 +231,8 @@ def test_main_failure_path_invokes_notify(
     cfg.write_text(json.dumps(sample_config))
     prompt = tmp_path / "prompt.md"
     prompt.write_text("# Test prompt")
-    monkeypatch.setattr(fresh_ge_module, "CONFIG_FILE", cfg)
-    monkeypatch.setattr(fresh_ge_module, "PROMPT_FILE", prompt)
+    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(_config, "PROMPT_FILE", prompt)
 
     # Force generate_script to throw
     def boom(*args, **kwargs):
@@ -260,7 +262,7 @@ def test_main_default_edition_auto_detected(
     """When --edition is not provided, default to _default_edition()."""
     cfg = tmp_path / "config.yaml"
     cfg.write_text(json.dumps(sample_config))
-    monkeypatch.setattr(fresh_ge_module, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
 
     # Pre-create both editions so main() dedup-bails for whichever was inferred
     (tmp_episodes_dir / "2026-05-14-am.json").write_text(json.dumps({"audio_file": "/x.mp3"}))
