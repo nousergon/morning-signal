@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import boto3
 import pytest
 from moto import mock_aws
 

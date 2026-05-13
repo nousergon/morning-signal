@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,13 +68,39 @@ def _default_edition() -> str:
 
 # Convenience re-exports so tests + downstream code can use
 # `from morning_signal import episode as ge; ge._chunk_text(...)` etc.
-# This mirrors the pre-refactor single-module surface.
+# This mirrors the pre-refactor single-module surface. Listed in
+# ``__all__`` so static analyzers (CodeQL's py/unused-import, etc.)
+# treat them as intentional re-exports rather than dead imports.
 from morning_signal.aws import _aws_client, _load_runner_session, _maybe_load_from_ssm  # noqa: E402,F401
 from morning_signal.claude import EDITION_LABELS, generate_script  # noqa: E402,F401
 from morning_signal.config import load_config, load_prompt  # noqa: E402,F401
 from morning_signal.notify import make_doctor, notify_success  # noqa: E402,F401
 from morning_signal.publish import publish_to_s3  # noqa: E402,F401
 from morning_signal.tts import _adjust_speed, _chunk_text, _concat_mp3s, tts_polly  # noqa: E402,F401
+
+__all__ = [
+    "EDITION_LABELS",
+    "_adjust_speed",
+    "_aws_client",
+    "_chunk_text",
+    "_concat_mp3s",
+    "_default_edition",
+    "_episode_stem",
+    "_existing_episode",
+    "_load_runner_session",
+    "_make_progress",
+    "_maybe_load_from_ssm",
+    "generate_script",
+    "load_config",
+    "load_prompt",
+    "main",
+    "make_doctor",
+    "notify_success",
+    "publish_to_s3",
+    "save_metadata",
+    "save_script",
+    "tts_polly",
+]
 
 # Mutable module-level paths + AWS session live in their canonical homes
 # (config.py for paths, aws.py for session). Tests historically read these
