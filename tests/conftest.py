@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Iterator
 
 import pytest
 
@@ -75,10 +74,11 @@ def sample_config() -> dict:
         "max_tokens": 8192,
         "feed_max_episodes": 90,
         "notifications": {
-            "enabled": True,
-            "sender": "sender@example.com",
-            "recipients": ["recipient@example.com"],
-            "ses_region": "us-east-1",
+            # Disabled by default in the fixture — tests that exercise
+            # the flow-doctor path build their own config inline with
+            # the telegram_* fields populated, since most orchestration
+            # tests don't care about notifications.
+            "enabled": False,
         },
     }
 

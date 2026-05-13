@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import boto3
 import pytest
 from moto import mock_aws
 
@@ -222,11 +221,20 @@ def test_main_full_pipeline_script_only(
 
 
 @mock_aws
-def test_main_failure_path_invokes_notify(
+def test_main_failure_path_routes_through_flow_doctor_guard(
     fresh_ge_module, aws_env, tmp_episodes_dir, tmp_scripts_dir,
     sample_config, monkeypatch, tmp_path
 ):
-    """Uncaught exception in main() should invoke _notify_failure then re-raise."""
+    """Uncaught exception in main() must propagate through the
+    flow-doctor ``guard()`` context manager so the configured
+    Telegram notifier files the report, then re-raise so the
+    cron-runner sees a non-zero exit code.
+
+    We monkeypatch ``make_doctor`` to hand back the flow-doctor
+    pytest plugin's RecordingFlowDoctor — this verifies the wiring
+    captures the exception without needing Telegram credentials or
+    network access.
+    """
     cfg = tmp_path / "config.yaml"
     cfg.write_text(json.dumps(sample_config))
     prompt = tmp_path / "prompt.md"
@@ -234,16 +242,21 @@ def test_main_failure_path_invokes_notify(
     monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
     monkeypatch.setattr(_config, "PROMPT_FILE", prompt)
 
-    # Force generate_script to throw
+    # Force generate_script to throw — the failure must propagate
+    # through doctor.guard() and re-raise.
     def boom(*args, **kwargs):
         raise RuntimeError("synthetic test failure")
 
     monkeypatch.setattr(fresh_ge_module, "generate_script", boom)
 
-    notify_calls = []
-    def capture_notify(args, config, exc, tb):
-        notify_calls.append((args.date, args.edition, type(exc).__name__))
-    monkeypatch.setattr(fresh_ge_module, "_notify_failure", capture_notify)
+    # Swap make_doctor → returns the RecordingFlowDoctor for the
+    # guard() side, and None for the success-notifier side (failure
+    # path doesn't touch the success notifier).
+    from flow_doctor.testing import RecordingFlowDoctor
+    recorder = RecordingFlowDoctor()
+    monkeypatch.setattr(
+        fresh_ge_module, "make_doctor", lambda config, edition: (recorder, None)
+    )
 
     monkeypatch.setattr(sys, "argv", [
         "generate_episode.py", "--date", "2026-05-14", "--edition", "am", "--script-only",
@@ -252,7 +265,11 @@ def test_main_failure_path_invokes_notify(
     with pytest.raises(RuntimeError, match="synthetic"):
         fresh_ge_module.main()
 
-    assert notify_calls == [("2026-05-14", "am", "RuntimeError")]
+    # guard() should have captured the failure as a single report,
+    # tagged with the exc_type the cron-runner cares about.
+    assert len(recorder.reports) == 1
+    assert recorder.last.exc_type == "RuntimeError"
+    assert "synthetic" in (recorder.last.exc_message or "")
 
 
 @mock_aws
