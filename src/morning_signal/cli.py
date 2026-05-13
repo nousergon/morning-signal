@@ -170,10 +170,18 @@ def version() -> None:
 
 @app.command()
 def init() -> None:
-    """Interactive setup wizard (stub — full implementation lands in PR 3)."""
-    typer.echo("`morning-signal init` ships in PR 3 of the Phase 1 PyPI arc.")
-    typer.echo("For now, follow the manual setup in README.md → 'Quick start (local CLI)'.")
-    raise typer.Exit(code=0)
+    """Interactive setup wizard.
+
+    Walks through AWS credential check, Anthropic key validation, S3 bucket
+    bootstrap (create + public-read policy + CORS), config.yaml + prompt.md
+    write, scheduler installation (launchd / systemd-user / cron based on OS),
+    and an optional smoke test.
+    """
+    _setup_logging()
+    from morning_signal.init.wizard import run
+    code = run()
+    if code != 0:
+        raise typer.Exit(code=code)
 
 
 def main() -> None:

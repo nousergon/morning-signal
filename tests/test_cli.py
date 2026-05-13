@@ -30,15 +30,6 @@ def test_version_prints_package_version(runner):
     assert __version__ in result.stdout
 
 
-# ── init stub ────────────────────────────────────────────────────────────────
-
-
-def test_init_stub_exits_clean(runner):
-    result = runner.invoke(app, ["init"])
-    assert result.exit_code == 0
-    assert "PR 3" in result.stdout
-
-
 # ── subscribe ────────────────────────────────────────────────────────────────
 
 
