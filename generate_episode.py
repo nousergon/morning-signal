@@ -324,6 +324,61 @@ def save_metadata(date_str: str, script_path: Path, audio_path: Path | None) -> 
     (EPISODES_DIR / f"{date_str}.json").write_text(json.dumps(meta, indent=2))
 
 
+# ── Notifications ───────────────────────────────────────────────────────────
+
+def _send_ses(subject: str, body: str, config: dict) -> None:
+    """Send a notification email via SES. No-op if notifications not configured."""
+    notif = config.get("notifications", {})
+    if not notif.get("enabled"):
+        return
+    sender = notif.get("sender")
+    recipients = notif.get("recipients", [])
+    region = notif.get("ses_region", "us-east-1")
+    if not sender or not recipients:
+        log.warning("notifications.enabled=true but sender/recipients missing; skipping send")
+        return
+    try:
+        ses = _aws_client("ses", region_name=region)
+        ses.send_email(
+            Source=sender,
+            Destination={"ToAddresses": recipients},
+            Message={
+                "Subject": {"Data": subject, "Charset": "utf-8"},
+                "Body": {"Text": {"Data": body, "Charset": "utf-8"}},
+            },
+        )
+        log.info(f"notify: sent → {','.join(recipients)} [{subject}]")
+    except Exception as e:
+        log.error(f"notify: SES send failed: {e}")
+
+
+def _notify_success(args, config: dict, audio_path: Path | None) -> None:
+    parts = [f"Episode {args.date} ready.", ""]
+    if audio_path and audio_path.exists():
+        size_kb = audio_path.stat().st_size / 1024
+        parts.append(f"Audio: {audio_path.name} ({size_kb:.0f} KB)")
+    script_path = SCRIPTS_DIR / f"{args.date}.md"
+    if script_path.exists():
+        words = len(script_path.read_text().split())
+        parts.append(f"Script: ~{words} words (~{words / 150:.1f} min spoken)")
+    feed_url = config.get("base_url", "").rstrip("/") + "/feed.xml"
+    if feed_url:
+        parts.append("")
+        parts.append(f"Feed: {feed_url}")
+    _send_ses(f"✓ Morning Signal {args.date}", "\n".join(parts), config)
+
+
+def _notify_failure(args, config: dict, exc: BaseException, traceback_str: str) -> None:
+    body = (
+        f"Episode {args.date} FAILED.\n\n"
+        f"Error type: {type(exc).__name__}\n"
+        f"Error: {exc}\n\n"
+        f"Traceback (last 30 lines):\n"
+        + "\n".join(traceback_str.splitlines()[-30:])
+    )
+    _send_ses(f"✗ Morning Signal {args.date} FAILED", body, config)
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -345,23 +400,34 @@ def main():
     EPISODES_DIR.mkdir(parents=True, exist_ok=True)
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    if not args.publish_only:
-        # Generate
-        script = generate_script(config, args.date)
-        script_path = save_script(script, args.date)
+    audio_path = None
+    try:
+        if not args.publish_only:
+            # Generate
+            script = generate_script(config, args.date)
+            script_path = save_script(script, args.date)
 
-        audio_path = None
-        if not args.script_only:
-            audio_path = EPISODES_DIR / f"{args.date}.mp3"
-            tts_polly(script, audio_path, config)
+            if not args.script_only:
+                audio_path = EPISODES_DIR / f"{args.date}.mp3"
+                tts_polly(script, audio_path, config)
 
-        save_metadata(args.date, script_path, audio_path)
+            save_metadata(args.date, script_path, audio_path)
 
-    # Publish
-    if not args.script_only and not args.no_publish:
-        publish_to_s3(config)
+        # Publish
+        if not args.script_only and not args.no_publish:
+            publish_to_s3(config)
 
-    log.info("Done.")
+        log.info("Done.")
+    except BaseException as exc:
+        import traceback
+        tb = traceback.format_exc()
+        log.error(f"FAILED: {type(exc).__name__}: {exc}")
+        _notify_failure(args, config, exc, tb)
+        raise
+
+    # Success — notify only for full pipeline runs (not script-only / publish-only)
+    if not args.script_only and not args.publish_only:
+        _notify_success(args, config, audio_path)
 
 
 if __name__ == "__main__":
