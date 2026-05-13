@@ -188,7 +188,30 @@ def test_step_write_config_prompt_style_blank(tmp_path):
 
     state = WizardState(workdir=tmp_path, bucket_name="b", base_url="x", prompt_style="blank")
     step_write_config(state)
-    assert "Edit this prompt" in (tmp_path / "prompt.md").read_text()
+    # The bundled prompt-blank.md is a stub that explains how to write a prompt.
+    assert "Your prompt goes here" in (tmp_path / "prompt.md").read_text()
+
+
+def test_step_write_config_loads_each_preset(tmp_path):
+    """Every PROMPT_PRESETS value should load successfully from morning_signal/data/."""
+    from morning_signal.init.wizard import PROMPT_PRESETS, WizardState, step_write_config
+
+    for preset in PROMPT_PRESETS:
+        workdir = tmp_path / preset
+        workdir.mkdir()
+        state = WizardState(workdir=workdir, bucket_name="b", base_url="x", prompt_style=preset)
+        r = step_write_config(state)
+        assert r.ok, f"preset {preset!r} failed to write: {r.message}"
+        content = (workdir / "prompt.md").read_text()
+        assert len(content) > 100, f"preset {preset!r} produced suspiciously short prompt"
+
+
+def test_step_write_config_unknown_preset_falls_back_to_blank(tmp_path):
+    from morning_signal.init.wizard import WizardState, step_write_config
+
+    state = WizardState(workdir=tmp_path, bucket_name="b", base_url="x", prompt_style="nonexistent")
+    step_write_config(state)
+    assert (tmp_path / "prompt.md").exists()
 
 
 # ── step_save_anthropic_key ──────────────────────────────────────────────────

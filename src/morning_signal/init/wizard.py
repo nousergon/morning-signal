@@ -211,28 +211,25 @@ def step_create_bucket(bucket_name: str, region: str = "us-west-2") -> StepResul
 # ── Step 4: Write config + prompt ────────────────────────────────────────────
 
 
-_DEFAULT_PROMPTS: dict = {
-    "generic-news": (
-        "You are the host of a concise daily briefing podcast. Tone is sharp, "
-        "analytical, efficient. Deliver as a natural spoken monologue (no markdown, "
-        "no headers). Use smooth transitions between segments.\n\n"
-        "## Segments\n\n"
-        "1. **Markets** — what's moving today: futures, key index levels, notable "
-        "earnings, economic data releases.\n\n"
-        "2. **Macro / Economics** — Fed, rates, Treasury yields, dollar, oil, gold, "
-        "geopolitical developments affecting markets.\n\n"
-        "3. **Tech / AI** — semiconductors, AI infrastructure, model releases, "
-        "industry moves.\n\n"
-        "4. **One Big Story** — pick the single most important story of the day and "
-        "go deeper than the rest.\n\n"
-        "## Length\n\nHard cap: ~2,000 words.\n\n"
-        "## Style\n\n- Conversational, not written prose.\n"
-        "- Include specific numbers where relevant.\n"
-        "- Flag uncertainty honestly.\n"
-        "- End clean — no sign-off catchphrases.\n"
-    ),
-    "blank": "# Edit this prompt to define your podcast\n",
+_PROMPT_PRESET_FILES = {
+    "generic-news": "prompt-generic-news.md",
+    "tech-only": "prompt-tech-only.md",
+    "markets-only": "prompt-markets-only.md",
+    "local-news": "prompt-local-news.md",
+    "blank": "prompt-blank.md",
 }
+
+PROMPT_PRESETS = tuple(_PROMPT_PRESET_FILES.keys())
+
+
+def _load_preset(style: str) -> str:
+    """Read a bundled prompt preset from morning_signal/data/. Falls back to blank."""
+    filename = _PROMPT_PRESET_FILES.get(style, _PROMPT_PRESET_FILES["blank"])
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    preset_path = data_dir / filename
+    if preset_path.exists():
+        return preset_path.read_text()
+    return f"# {filename} not bundled; please write your prompt here.\n"
 
 
 def step_write_config(state: WizardState, force: bool = False) -> StepResult:
@@ -287,7 +284,7 @@ def step_write_config(state: WizardState, force: bool = False) -> StepResult:
         },
     }
     config_path.write_text(yaml.safe_dump(config_data, sort_keys=False))
-    prompt_path.write_text(_DEFAULT_PROMPTS.get(state.prompt_style, _DEFAULT_PROMPTS["blank"]))
+    prompt_path.write_text(_load_preset(state.prompt_style))
     return StepResult(
         ok=True,
         message=f"Wrote {config_path.name} + {prompt_path.name} into {state.workdir}",
@@ -544,9 +541,13 @@ def run(workdir: Optional[Path] = None) -> int:
     state.podcast_title = typer.prompt("  Podcast title", default="Morning Signal")
     state.podcast_author = typer.prompt("  Author name", default="")
     state.podcast_email = typer.prompt("  Owner email (for iTunes; optional)", default="")
+    style_help = " | ".join(PROMPT_PRESETS)
     state.prompt_style = typer.prompt(
-        "  Prompt style [generic-news | blank]", default="generic-news"
+        f"  Prompt style [{style_help}]", default="generic-news"
     )
+    if state.prompt_style not in PROMPT_PRESETS:
+        typer.echo(f"  Unknown preset {state.prompt_style!r}; falling back to 'blank'.")
+        state.prompt_style = "blank"
     r = step_write_config(state, force=False)
     if not r.ok and "Refusing" in r.message:
         if typer.confirm(f"  {r.message}\n  Overwrite?", default=False):

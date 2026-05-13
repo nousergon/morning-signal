@@ -216,6 +216,10 @@ One edition per day is half that. Add an always-on EC2 t3.micro (~$8/month) if y
 
 The suite uses `moto` for boto3 mocking and an inline anthropic mock — no real API calls. Coverage target: 80%+.
 
+## Alpha disclaimer
+
+`v0.1.x` is an **alpha release**. The CLI surface, config schema, and SSM/IAM hooks may change in breaking ways before `v1.0.0`. Pin to a specific version (`pip install morning-signal==0.1.0`) if you're depending on a stable interface; otherwise expect to read the CHANGELOG when bumping.
+
 ## Troubleshooting
 
 **Episodes not appearing in podcast app**
