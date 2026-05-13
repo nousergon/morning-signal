@@ -17,6 +17,8 @@ Requires:
     AWS credentials    — for Polly TTS + S3 publish (via env, ~/.aws/credentials, or IAM role)
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
