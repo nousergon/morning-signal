@@ -135,7 +135,10 @@ def load_prompt() -> str:
 
 # ── Script Generation ───────────────────────────────────────────────────────
 
-def generate_script(config: dict, date_str: str) -> str:
+EDITION_LABELS = {"am": "MORNING", "pm": "EVENING"}
+
+
+def generate_script(config: dict, date_str: str, edition: str) -> str:
     """Call Claude with web search to generate the podcast script."""
     import anthropic
 
@@ -144,8 +147,9 @@ def generate_script(config: dict, date_str: str) -> str:
 
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     friendly_date = dt.strftime("%A, %B %-d, %Y")
+    edition_label = EDITION_LABELS[edition]
 
-    log.info(f"Generating script for {friendly_date}...")
+    log.info(f"Generating {edition_label} script for {friendly_date}...")
 
     response = client.messages.create(
         model=config.get("claude_model", "claude-sonnet-4-20250514"),
@@ -155,7 +159,10 @@ def generate_script(config: dict, date_str: str) -> str:
             {
                 "role": "user",
                 "content": (
-                    f"Today is {friendly_date}. Generate today's podcast episode.\n\n"
+                    f"Today is {friendly_date}. This is the {edition_label} edition "
+                    f"of Morning Signal. Generate today's {edition_label.lower()} episode "
+                    f"per the production prompt below, respecting the News Window for this "
+                    f"edition (only news/events since the prior edition).\n\n"
                     f"Production prompt:\n\n{prompt_text}"
                 ),
             }
@@ -318,22 +325,28 @@ def _adjust_speed(path: Path, speed: float) -> None:
     log.info(f"Speed adjusted to {speed}x")
 
 
-def save_script(script: str, date_str: str) -> Path:
+def _episode_stem(date_str: str, edition: str) -> str:
+    """Filename stem for an episode: '2026-05-14-am' or '2026-05-14-pm'."""
+    return f"{date_str}-{edition}"
+
+
+def save_script(script: str, date_str: str, edition: str) -> Path:
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = SCRIPTS_DIR / f"{date_str}.md"
+    path = SCRIPTS_DIR / f"{_episode_stem(date_str, edition)}.md"
     path.write_text(script)
     log.info(f"Script: {path.name}")
     return path
 
 
-def save_metadata(date_str: str, script_path: Path, audio_path: Path | None) -> None:
+def save_metadata(date_str: str, edition: str, script_path: Path, audio_path: Path | None) -> None:
     meta = {
         "date": date_str,
+        "edition": edition,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "script_file": str(script_path),
         "audio_file": str(audio_path) if audio_path else None,
     }
-    (EPISODES_DIR / f"{date_str}.json").write_text(json.dumps(meta, indent=2))
+    (EPISODES_DIR / f"{_episode_stem(date_str, edition)}.json").write_text(json.dumps(meta, indent=2))
 
 
 # ── Notifications ───────────────────────────────────────────────────────────
@@ -365,37 +378,39 @@ def _send_ses(subject: str, body: str, config: dict) -> None:
 
 
 def _notify_success(args, config: dict, audio_path: Path | None) -> None:
-    parts = [f"Episode {args.date} ready.", ""]
+    edition_tag = args.edition.upper()
+    parts = [f"{edition_tag} edition for {args.date} ready.", ""]
     if audio_path and audio_path.exists():
         size_kb = audio_path.stat().st_size / 1024
         parts.append(f"Audio: {audio_path.name} ({size_kb:.0f} KB)")
-    script_path = SCRIPTS_DIR / f"{args.date}.md"
+    script_path = SCRIPTS_DIR / f"{_episode_stem(args.date, args.edition)}.md"
     if script_path.exists():
         words = len(script_path.read_text().split())
-        parts.append(f"Script: ~{words} words (~{words / 150:.1f} min spoken)")
+        parts.append(f"Script: ~{words} words (~{words / 150:.1f} min read; ~{words / 150 / float(config.get('tts', {}).get('speed', 1.0)):.1f} min audio)")
     feed_url = config.get("base_url", "").rstrip("/") + "/feed.xml"
     if feed_url:
         parts.append("")
         parts.append(f"Feed: {feed_url}")
-    _send_ses(f"✓ Morning Signal {args.date}", "\n".join(parts), config)
+    _send_ses(f"✓ Morning Signal {args.date} {edition_tag}", "\n".join(parts), config)
 
 
 def _notify_failure(args, config: dict, exc: BaseException, traceback_str: str) -> None:
+    edition_tag = args.edition.upper()
     body = (
-        f"Episode {args.date} FAILED.\n\n"
+        f"{edition_tag} edition for {args.date} FAILED.\n\n"
         f"Error type: {type(exc).__name__}\n"
         f"Error: {exc}\n\n"
         f"Traceback (last 30 lines):\n"
         + "\n".join(traceback_str.splitlines()[-30:])
     )
-    _send_ses(f"✗ Morning Signal {args.date} FAILED", body, config)
+    _send_ses(f"✗ Morning Signal {args.date} {edition_tag} FAILED", body, config)
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-def _existing_episode(date_str: str) -> bool:
-    """True if a complete episode already exists for this date (JSON + audio_file ref)."""
-    meta_path = EPISODES_DIR / f"{date_str}.json"
+def _existing_episode(date_str: str, edition: str) -> bool:
+    """True if a complete episode already exists for this (date, edition)."""
+    meta_path = EPISODES_DIR / f"{_episode_stem(date_str, edition)}.json"
     if not meta_path.exists():
         return False
     try:
@@ -405,9 +420,23 @@ def _existing_episode(date_str: str) -> bool:
     return bool(meta.get("audio_file"))
 
 
+def _default_edition() -> str:
+    """Default edition by Pacific clock: 'am' if PT hour < 12, else 'pm'.
+
+    Must use Pacific time explicitly — the EC2 system clock is UTC, so
+    datetime.now().hour at the 5 PM PT firing (= 0/1 UTC) would wrongly
+    return 'am'. zoneinfo ships with Python 3.9+ and resolves DST
+    automatically against the tzdata package.
+    """
+    from zoneinfo import ZoneInfo
+    return "am" if datetime.now(ZoneInfo("America/Los_Angeles")).hour < 12 else "pm"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Morning Signal podcast generator")
     parser.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"))
+    parser.add_argument("--edition", choices=["am", "pm"], default=None,
+                        help="Edition (am|pm). Default: inferred from clock (am if before noon).")
     parser.add_argument("--script-only", action="store_true",
                         help="Script only — no TTS, no publish")
     parser.add_argument("--no-publish", action="store_true",
@@ -418,6 +447,9 @@ def main():
                         help="Force regenerate + re-upload even if episode already exists")
     args = parser.parse_args()
 
+    if args.edition is None:
+        args.edition = _default_edition()
+
     global _AWS_SESSION
     _AWS_SESSION = _load_runner_session()
     _maybe_load_from_ssm()
@@ -427,8 +459,8 @@ def main():
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Front-door dedup: don't re-burn Claude+Polly+S3 on accidental re-runs.
-    if not args.publish_only and not args.force and _existing_episode(args.date):
-        log.info(f"Episode {args.date} already exists; skipping (use --force to regenerate).")
+    if not args.publish_only and not args.force and _existing_episode(args.date, args.edition):
+        log.info(f"Episode {args.date}-{args.edition} already exists; skipping (use --force to regenerate).")
         return
 
     audio_path = None
@@ -436,15 +468,15 @@ def main():
     try:
         if not args.publish_only:
             # Generate
-            script = generate_script(config, args.date)
-            script_path = save_script(script, args.date)
+            script = generate_script(config, args.date, args.edition)
+            script_path = save_script(script, args.date, args.edition)
 
             if not args.script_only:
-                audio_path = EPISODES_DIR / f"{args.date}.mp3"
+                audio_path = EPISODES_DIR / f"{_episode_stem(args.date, args.edition)}.mp3"
                 tts_polly(script, audio_path, config)
                 fresh_uploads.add(audio_path.name)
 
-            save_metadata(args.date, script_path, audio_path)
+            save_metadata(args.date, args.edition, script_path, audio_path)
 
         # Publish
         if not args.script_only and not args.no_publish:

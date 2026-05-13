@@ -1,212 +1,241 @@
 # Morning Signal
 
-Auto-generated daily briefing podcast. A cron job fires at 5am, Claude writes the script using live web search, Amazon Polly converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in Apple Podcasts (or any podcast app) and episodes just show up on your phone.
+[![CI](https://github.com/cipher813/morning-signal/actions/workflows/test.yml/badge.svg)](https://github.com/cipher813/morning-signal/actions/workflows/test.yml)
+[![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen.svg)](#tests)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## How It Works
+Auto-generated daily briefing podcast. A scheduler fires at 5 AM (and optionally 5 PM) Pacific, Claude with web search writes the script, Amazon Polly converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in any podcast app — episodes just show up on your phone.
+
+## How it works
 
 ```
-5:00 AM cron
+Scheduler (systemd timer / cron / launchd)
   │
-  ├─ 1. Read prompt.md (your editable production prompt)
-  ├─ 2. Call Claude + web search → generate script
-  ├─ 3. Call Amazon Polly TTS → generate MP3
+  ├─ 1. Load prompt + config (from local files OR SSM Parameter Store)
+  ├─ 2. Call Claude with web search → ~2,000-word script
+  ├─ 3. Call Amazon Polly → synthesize speech, ffmpeg speed-adjust
   ├─ 4. Upload MP3 + regenerate RSS feed → S3
+  ├─ 5. Email success/failure notification (optional, via SES)
   │
-  └─ Episode appears in your podcast app
+  └─ Episode appears in your podcast app within minutes
 ```
 
-## Project Structure
+Two production deployment styles are supported:
+
+- **Local CLI** (Mac/Linux dev) — reads `config.yaml`, `prompt.md`, and `.env` from disk. Schedule with cron or launchd.
+- **Cloud deploy** — runs on a long-lived EC2 instance under systemd, reads config + prompt + secrets from AWS SSM Parameter Store, assumes a dedicated IAM role for Polly + S3 + SSM + SES. Survives laptop sleep, supports DST-aware scheduling, and surfaces failures by email.
+
+## Project structure
 
 ```
 morning-signal/
-├── config.yaml            ← S3 bucket, TTS settings, podcast metadata
-├── prompt.md              ← YOUR PODCAST — edit segments, sources, tone
-├── generate_episode.py    ← Main script
-├── feed.py                ← RSS feed generator
+├── generate_episode.py    Main script — generates and publishes one episode
+├── feed.py                RSS feed builder (Apple-compatible)
+├── config.yaml.example    Configuration template
+├── prompt.md              YOUR PODCAST — segments, sources, tone, length cap
+├── run.sh                 Local-dev launcher (sources .env + venv → python)
 ├── requirements.txt
-├── artwork.jpg            ← Podcast cover art (3000x3000 recommended)
-├── episodes/              ← MP3s + metadata JSON
-├── scripts/               ← Raw text transcripts
-└── feed.xml               ← Generated RSS (also uploaded to S3)
+├── artwork.jpg            Podcast cover art (3000×3000 recommended)
+├── tests/                 pytest suite (run via `pytest --cov`)
+├── episodes/              Generated MP3s + metadata JSON (gitignored)
+├── scripts/               Generated transcripts (gitignored)
+└── feed.xml               Generated RSS (gitignored; also lives on S3)
 ```
 
-## Setup
+## Quick start (local CLI)
 
-### 1. Install dependencies
+### 1. Install
 
 ```bash
-cd morning-signal
-pip install -r requirements.txt
+git clone https://github.com/cipher813/morning-signal.git && cd morning-signal
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
-### 2. Set API key
+### 2. Configure
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
+cp config.yaml.example config.yaml
+$EDITOR config.yaml          # set s3_bucket + base_url + podcast metadata
+$EDITOR prompt.md            # set segments, tickers, sources
+echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env
 ```
-
-Or add to `~/.bashrc` / `~/.zshrc` for persistence. AWS credentials are used for both Polly TTS and S3 — configure via `aws configure` or environment variables.
 
 ### 3. Create the S3 bucket
 
 ```bash
-# Create bucket
-aws s3 mb s3://morning-signal-podcast --region us-west-2
+BUCKET=morning-signal-podcast  # or your name
+REGION=us-west-2
 
-# Set bucket policy for public read access
-aws s3api put-bucket-policy --bucket morning-signal-podcast --policy '{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": "*",
-    "Action": "s3:GetObject",
-    "Resource": "arn:aws:s3:::morning-signal-podcast/*"
-  }]
-}'
+aws s3 mb "s3://$BUCKET" --region "$REGION"
+aws s3api put-public-access-block --bucket "$BUCKET" \
+  --public-access-block-configuration BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false
+aws s3api put-bucket-policy --bucket "$BUCKET" --policy "$(cat <<EOF
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"arn:aws:s3:::$BUCKET/*"}]}
+EOF
+)"
 ```
 
-Your feed URL will be:
-```
-https://morning-signal-podcast.s3.us-west-2.amazonaws.com/feed.xml
-```
+The bucket must be publicly readable so podcast apps can fetch the episodes.
 
-**Optional but recommended: CloudFront**
-
-A CloudFront distribution gives you a cleaner URL and better performance. Create one pointing at the S3 bucket, then update `base_url` in `config.yaml`.
-
-### 4. Update config.yaml
-
-Set your actual `s3_bucket` name and `base_url`. Everything else has sensible defaults.
-
-### 5. Add podcast artwork
-
-Place a `artwork.jpg` (ideally 3000x3000 JPEG) in the project root. Apple Podcasts requires artwork between 1400x1400 and 3000x3000. A simple square image with your podcast name works fine.
-
-### 6. Test locally
+### 4. Verify
 
 ```bash
-# Script only — no TTS cost, no S3 upload
+.venv/bin/python generate_episode.py --script-only   # Claude only, no TTS, no upload
+.venv/bin/python generate_episode.py --no-publish    # Add Polly, no upload
+.venv/bin/python generate_episode.py                 # Full pipeline
+```
+
+### 5. Subscribe in Apple Podcasts (or any podcast app)
+
+Once the first episode publishes successfully:
+
+- **Apple Podcasts:** Library → ··· → "Follow a Show by URL…" → paste your feed URL
+- **Overcast / Pocket Casts:** "Add URL" → paste
+
+Your feed URL is `<base_url>/feed.xml`.
+
+## Cloud deploy (recommended for reliability)
+
+The local CLI is fine for testing, but a laptop that sleeps at 5 AM won't run the cron. For dependable daily delivery, deploy on a long-lived host with `systemd`.
+
+The pipeline supports two environment-variable knobs that turn on production behavior:
+
+- `MORNING_SIGNAL_RUNNER_ROLE_ARN=<role-arn>` — at startup, call `sts:AssumeRole` and use that role's credentials for all subsequent boto3 clients. Lets you keep secrets/perms scoped to a dedicated runtime identity instead of the host's instance profile.
+- `MORNING_SIGNAL_USE_SSM=1` — fetch `config.yaml`, `prompt.md`, and `ANTHROPIC_API_KEY` from AWS SSM Parameter Store paths `/morning-signal/config-yaml`, `/morning-signal/prompt-md`, `/morning-signal/anthropic-api-key` (SecureString). Override the region with `MORNING_SIGNAL_SSM_REGION` (default `us-east-1`).
+
+If neither is set, the script behaves as the local CLI — reads from disk, uses the default boto3 credential chain.
+
+A representative systemd unit:
+
+```ini
+# /etc/systemd/system/morning-signal.service
+[Unit]
+Description=Morning Signal podcast generator
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/morning-signal
+Environment="MORNING_SIGNAL_RUNNER_ROLE_ARN=arn:aws:iam::ACCOUNT_ID:role/morning-signal-runner-role"
+Environment="MORNING_SIGNAL_USE_SSM=1"
+Environment="MORNING_SIGNAL_SSM_REGION=us-east-1"
+ExecStart=/home/ec2-user/morning-signal/.venv/bin/python generate_episode.py
+TimeoutStartSec=600
+PrivateTmp=true
+```
+
+```ini
+# /etc/systemd/system/morning-signal.timer
+[Unit]
+Description=Morning Signal — 5 AM + 5 PM Pacific (DST-aware)
+
+[Timer]
+Unit=morning-signal.service
+OnCalendar=*-*-* 05:00:00 America/Los_Angeles
+OnCalendar=*-*-* 17:00:00 America/Los_Angeles
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+`Persistent=true` catches missed firings — e.g., if the host was rebooting at the calendar moment, the run fires when the host comes back up. `America/Los_Angeles` automatically tracks PDT/PST.
+
+## Two editions per day
+
+When the `--edition` flag is unset, it's inferred from the Pacific clock (`am` if local hour < 12, else `pm`). Filenames carry the suffix: `2026-05-14-am.mp3`, `2026-05-14-pm.mp3`. Each edition is told via the prompt to cover only news that has broken since the prior edition (~12-hour window), avoiding duplicated content.
+
+To run one edition daily, just omit the second `OnCalendar` line in the timer.
+
+## CLI reference
+
+```bash
+# Default: generate today's edition + publish (edition inferred from clock)
+python generate_episode.py
+
+# Specific edition / date
+python generate_episode.py --edition pm
+python generate_episode.py --date 2026-05-13 --edition am
+
+# Re-generate an episode that already exists (overrides front-door dedup)
+python generate_episode.py --force
+
+# Script only — free; no TTS, no upload
 python generate_episode.py --script-only
 
-# Full generation, no upload
+# Generate locally, skip S3
 python generate_episode.py --no-publish
 
-# Full pipeline
-python generate_episode.py
-```
-
-### 7. Subscribe on your iPhone
-
-Once the first episode is published:
-
-**Apple Podcasts:**
-1. Open Apple Podcasts
-2. Library → top-right menu (···) → "Follow a Show by URL..."
-3. Paste your feed URL: `https://your-bucket.s3.us-west-2.amazonaws.com/feed.xml`
-
-**Overcast** (recommended — better for private feeds):
-1. Open Overcast → Add URL
-2. Paste feed URL
-
-**Pocket Casts:**
-1. Search → "RSS Feed"
-2. Paste feed URL
-
-### 8. Schedule at 5am
-
-```bash
-crontab -e
-```
-
-Add:
-
-```cron
-0 5 * * * cd /path/to/morning-signal && /path/to/python generate_episode.py >> /path/to/morning-signal/cron.log 2>&1
-```
-
-For WSL2, ensure cron runs on boot:
-
-```bash
-# /etc/wsl.conf
-[boot]
-command = "service cron start"
-```
-
-## Usage
-
-```bash
-# Default: generate today + publish
-python generate_episode.py
-
-# Script only (free — no TTS)
-python generate_episode.py --script-only
-
-# Generate but don't upload
-python generate_episode.py --no-publish
-
-# Rebuild feed + re-upload without regenerating
+# Rebuild feed only (no Claude / Polly call), republish to S3
 python generate_episode.py --publish-only
-
-# Specific date
-python generate_episode.py --date 2026-04-20
 ```
 
-## Customizing Your Podcast
+## Customizing your podcast
 
 Everything is controlled by two files:
 
-### prompt.md — Content & Segments
+### `prompt.md` — Content + segments
 
-This is the system prompt sent to Claude. Edit it freely:
+This is the production prompt sent to Claude. Edit freely:
 
-- Add/remove/reorder segments
-- Change time targets per segment
-- Add specific sources or tickers
-- Adjust tone and style
-- Add recurring segments (e.g., "Crypto Check", "Earnings Preview")
+- Add / remove / reorder segments
+- Pin specific sources, tickers, or themes
+- Tune the word-count cap (the supplied prompt targets ~2,000 words ≈ 9 min audio at 1.5× playback)
+- Adjust the news-window instruction if you want one or two editions
 
-### config.yaml — Infrastructure & Metadata
+### `config.yaml` — Infrastructure + metadata
 
-- TTS provider and voice
-- S3 bucket and region
-- Podcast title, description, category
+- TTS voice + engine + playback speed
+- S3 bucket + base URL
+- Podcast title / description / category
 - Max episodes in the feed
+- SES notification recipients (optional)
 
 ## Cost
 
-| Component | Per Episode | Monthly (30 days) |
-|-----------|-------------|-------------------|
-| Claude Sonnet + web search | ~$0.03 | ~$0.90 |
-| Amazon Polly neural (~8K chars) | ~$0.03 | ~$0.90 |
+For two editions per day (5 AM + 5 PM Pacific):
+
+| Component | Per episode | Monthly (60 episodes) |
+|-----------|-------------|----------------------|
+| Claude Sonnet + web search | ~$0.03 | ~$1.80 |
+| Amazon Polly neural (~10 KB chars) | ~$0.04 | ~$2.40 |
 | S3 storage + transfer | ~$0.01 | ~$0.30 |
-| **Total** | **~$0.07** | **~$2.10** |
+| **Total** | **~$0.08** | **~$4.50** |
+
+One edition per day is half that. Add an always-on EC2 t3.micro (~$8/month) if you don't already have a host; serverless options (Lambda + EventBridge, Fly scheduled Machine) come in cheaper but require a container image because ffmpeg is needed for the speed adjustment.
+
+## Tests
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest --cov
+```
+
+The suite uses `moto` for boto3 mocking and an inline anthropic mock — no real API calls. Coverage target: 80%+.
 
 ## Troubleshooting
 
-**Cron not running (WSL2):**
-```bash
-sudo service cron status   # check if running
-sudo service cron start    # start it
-```
+**Episodes not appearing in podcast app**
+- Verify the feed URL returns HTTP 200: `curl -I <feed_url>`
+- Check the bucket policy allows public reads on `s3:GetObject`
+- Apple Podcasts can take 10–15 minutes to poll a new feed; Overcast / Pocket Casts are usually faster
 
-**Episodes not appearing in podcast app:**
-- Verify feed URL is publicly accessible: `curl -I <feed_url>`
-- Check that S3 bucket policy allows public reads
-- Apple Podcasts can take 10–15 minutes to poll a new feed
-- Overcast and Pocket Casts are usually faster
+**TTS chunking artifacts** (slight pauses mid-script)
+- Polly's neural engine has a 3000-char per-request limit; the script chunks at sentence boundaries and concatenates. Try a different voice or `polly_engine: "standard"` in `config.yaml` if it bothers you.
 
-**TTS chunking artifacts:**
-If you hear slight pauses at chunk boundaries, this is because Polly's neural engine has a 3000-char per-request limit and chunks are concatenated. Try adjusting the voice or engine in `config.yaml`.
-
-**Re-publish everything:**
+**Re-publish everything**
 ```bash
 python generate_episode.py --publish-only
 ```
 
-## Future Enhancements
+**Skip a dedup**
+```bash
+python generate_episode.py --force
+```
 
-- **Intro/outro music** — prepend a jingle with pydub before upload
-- **Multi-voice segments** — different TTS voice per segment
-- **Email digest** — send transcript + audio link to inbox alongside cron
-- **Lambda deployment** — run serverless (same pattern as Alpha Engine) for reliability when machine is off
-- **Transcript web page** — generate HTML per episode for searchability
+## License
+
+MIT — see [LICENSE](LICENSE).

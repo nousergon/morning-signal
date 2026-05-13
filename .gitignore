@@ -19,6 +19,9 @@ cron.log
 .venv/
 __pycache__/
 *.pyc
+.coverage
+.pytest_cache/
+htmlcov/
 
 # macOS
 .DS_Store
