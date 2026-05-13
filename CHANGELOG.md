@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc4] — 2026-05-13
+
+### Fixed
+- **`morning-signal generate --dry-run` errored with `No such option: --dry-run`.** rc3 added the flag at the argparse layer in `episode.main()` but missed wiring it through `cli.generate`'s typer signature. Typer rejected the unknown flag before it reached argparse. Added `dry_run: bool` option on the typer command + argv-translation entry. (+1 test verifies the flag reaches `episode.main()` through the typer wrapper.)
+
 ## [0.1.1rc3] — 2026-05-13
 
 ### Added
@@ -58,7 +63,8 @@ First public release on PyPI.
 - Requires Python 3.9+.
 - License: MIT.
 
-[Unreleased]: https://github.com/cipher813/morning-signal/compare/v0.1.1rc3...HEAD
+[Unreleased]: https://github.com/cipher813/morning-signal/compare/v0.1.1rc4...HEAD
+[0.1.1rc4]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc4
 [0.1.1rc3]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc3
 [0.1.1rc2]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc2
 [0.1.1rc1]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc1
