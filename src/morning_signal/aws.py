@@ -17,6 +17,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from morning_signal import config as _config
 
@@ -54,8 +55,9 @@ def _load_runner_session():
 
 
 def _maybe_load_from_ssm() -> None:
-    """If MORNING_SIGNAL_USE_SSM=1, fetch config + prompt + key from SSM and
-    rewrite the paths in `morning_signal.config` to point at the tmpdir copies.
+    """If MORNING_SIGNAL_USE_SSM=1, fetch config + prompt + key + Telegram
+    creds from SSM and rewrite the paths in `morning_signal.config` to
+    point at the tmpdir copies.
     """
     if os.environ.get("MORNING_SIGNAL_USE_SSM") != "1":
         return
@@ -65,6 +67,19 @@ def _maybe_load_from_ssm() -> None:
 
     def fetch(name: str) -> str:
         return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
+
+    def fetch_optional(name: str) -> Optional[str]:
+        """SSM fetch that tolerates ParameterNotFound — for params that
+        are optional per-install (Telegram creds when notifications
+        aren't enabled, etc.)."""
+        try:
+            return fetch(name)
+        except Exception as e:
+            cls = type(e).__name__
+            if cls == "ParameterNotFound" or "ParameterNotFound" in str(e):
+                log.info(f"SSM: optional param {name!r} not found, skipping")
+                return None
+            raise
 
     tmpdir = Path(tempfile.mkdtemp(prefix="morning-signal-"))
     tmpdir.chmod(0o700)
@@ -81,4 +96,21 @@ def _maybe_load_from_ssm() -> None:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         os.environ["ANTHROPIC_API_KEY"] = fetch("/morning-signal/anthropic-api-key")
 
-    log.info(f"SSM: loaded config + prompt + Anthropic key (tmpdir={tmpdir})")
+    # Flow-doctor / Telegram creds. Local env-var overrides win (so
+    # one-off local debugging stays cheap); SSM fills in otherwise.
+    # Optional — installs with notifications.enabled=false don't need
+    # these params to exist in SSM at all.
+    if not os.environ.get("FLOW_DOCTOR_TELEGRAM_BOT_TOKEN"):
+        token = fetch_optional("/morning-signal/flow-doctor-telegram-bot-token")
+        if token:
+            os.environ["FLOW_DOCTOR_TELEGRAM_BOT_TOKEN"] = token
+    if not os.environ.get("FLOW_DOCTOR_TELEGRAM_CHAT_ID"):
+        chat_id = fetch_optional("/morning-signal/flow-doctor-telegram-chat-id")
+        if chat_id:
+            os.environ["FLOW_DOCTOR_TELEGRAM_CHAT_ID"] = chat_id
+
+    log.info(
+        f"SSM: loaded config + prompt + Anthropic key "
+        f"({'+ Telegram creds ' if os.environ.get('FLOW_DOCTOR_TELEGRAM_BOT_TOKEN') else ''}"
+        f"tmpdir={tmpdir})"
+    )
