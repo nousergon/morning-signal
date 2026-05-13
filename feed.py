@@ -127,9 +127,12 @@ def generate_feed(
             speed = float(config.get("tts", {}).get("speed", 1.0)) or 1.0
             duration_secs = int(word_count / 150 * 60 / speed)
 
-        # Build <item>
+        # Build <item>. Back-catalog episodes have no `edition` field; new
+        # AM/PM episodes get the edition suffix in the displayed title.
+        edition = meta.get("edition")
+        title_date = f"{date_str} {edition.upper()}" if edition else date_str
         item = ET.SubElement(channel, "item")
-        _add(item, "title", f"Morning Signal — {date_str}")
+        _add(item, "title", f"Morning Signal — {title_date}")
         _add(item, "description", description)
         _add(item, "pubDate", format_datetime(pub_date))
         _add(item, "guid", url(f"episodes/{audio_filename}"))
