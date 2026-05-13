@@ -36,3 +36,9 @@ updates:
       - github-actions
     commit-message:
       prefix: "ci"
+    groups:
+      # Bundle all GitHub Actions bumps into one PR per week instead of one
+      # PR per action. Routine version bumps don't benefit from per-dep
+      # isolation; the CI matrix gates the whole bundle the same way.
+      actions:
+        patterns: ["*"]
