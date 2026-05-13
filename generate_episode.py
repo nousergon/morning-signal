@@ -421,8 +421,15 @@ def _existing_episode(date_str: str, edition: str) -> bool:
 
 
 def _default_edition() -> str:
-    """Default edition by clock: 'am' if local hour < 12, else 'pm'."""
-    return "am" if datetime.now().hour < 12 else "pm"
+    """Default edition by Pacific clock: 'am' if PT hour < 12, else 'pm'.
+
+    Must use Pacific time explicitly — the EC2 system clock is UTC, so
+    datetime.now().hour at the 5 PM PT firing (= 0/1 UTC) would wrongly
+    return 'am'. zoneinfo ships with Python 3.9+ and resolves DST
+    automatically against the tzdata package.
+    """
+    from zoneinfo import ZoneInfo
+    return "am" if datetime.now(ZoneInfo("America/Los_Angeles")).hour < 12 else "pm"
 
 
 def main():
