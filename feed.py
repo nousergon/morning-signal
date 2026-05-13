@@ -41,15 +41,13 @@ def generate_feed(
     ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
     CONTENT_NS = "http://purl.org/rss/1.0/modules/content/"
 
-    # Register namespaces so they appear correctly in output
+    # Register namespaces so they appear once at the root when children use them.
+    # Do NOT also pass xmlns:* as explicit attributes — that produces a duplicate
+    # xmlns:itunes declaration that strict parsers (Apple Podcasts) reject.
     ET.register_namespace("itunes", ITUNES_NS)
     ET.register_namespace("content", CONTENT_NS)
 
-    rss = ET.Element("rss", {
-        "version": "2.0",
-        "xmlns:itunes": ITUNES_NS,
-        "xmlns:content": CONTENT_NS,
-    })
+    rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
 
     # Channel metadata
