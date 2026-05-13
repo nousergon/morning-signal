@@ -126,6 +126,90 @@ def test_maybe_load_from_ssm_fetches_and_overrides_paths(
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-fake-key"
 
 
+@mock_aws
+def test_maybe_load_from_ssm_loads_telegram_creds_when_present(
+    fresh_ge_module, aws_env, monkeypatch
+):
+    """Optional flow-doctor / Telegram params under /morning-signal/*
+    flow into env vars when present. Local env-var overrides win."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_CHAT_ID", raising=False)
+
+    ssm = boto3.client("ssm", region_name=REGION_OTHER)
+    for name, value in [
+        ("/morning-signal/anthropic-api-key", "sk-fake-key"),
+        ("/morning-signal/config-yaml", "claude_model: test"),
+        ("/morning-signal/prompt-md", "# Test prompt"),
+        ("/morning-signal/flow-doctor-telegram-bot-token", "9999:fake-token"),
+        ("/morning-signal/flow-doctor-telegram-chat-id", "8606899594"),
+    ]:
+        ssm.put_parameter(Name=name, Value=value, Type="SecureString")
+
+    fresh_ge_module._maybe_load_from_ssm()
+
+    assert os.environ["FLOW_DOCTOR_TELEGRAM_BOT_TOKEN"] == "9999:fake-token"
+    assert os.environ["FLOW_DOCTOR_TELEGRAM_CHAT_ID"] == "8606899594"
+
+
+@mock_aws
+def test_maybe_load_from_ssm_tolerates_missing_telegram_params(
+    fresh_ge_module, aws_env, monkeypatch
+):
+    """Installs that haven't created the Telegram SSM params yet must
+    still boot — the Telegram fetch is optional per-param."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_CHAT_ID", raising=False)
+
+    ssm = boto3.client("ssm", region_name=REGION_OTHER)
+    # Seed only the required params (no /morning-signal/flow-doctor-*)
+    for name, value in [
+        ("/morning-signal/anthropic-api-key", "sk-fake-key"),
+        ("/morning-signal/config-yaml", "claude_model: test"),
+        ("/morning-signal/prompt-md", "# Test prompt"),
+    ]:
+        ssm.put_parameter(Name=name, Value=value, Type="SecureString")
+
+    # Must NOT raise on the missing Telegram params.
+    fresh_ge_module._maybe_load_from_ssm()
+    assert "FLOW_DOCTOR_TELEGRAM_BOT_TOKEN" not in os.environ
+
+
+@mock_aws
+def test_maybe_load_from_ssm_respects_local_env_override(
+    fresh_ge_module, aws_env, monkeypatch
+):
+    """If FLOW_DOCTOR_TELEGRAM_BOT_TOKEN is already set in the env (a
+    .env file, a one-off shell export), SSM doesn't clobber it. Same
+    contract as ANTHROPIC_API_KEY."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.setenv("FLOW_DOCTOR_TELEGRAM_BOT_TOKEN", "local-override-token")
+    monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_CHAT_ID", raising=False)
+
+    ssm = boto3.client("ssm", region_name=REGION_OTHER)
+    for name, value in [
+        ("/morning-signal/anthropic-api-key", "sk-fake-key"),
+        ("/morning-signal/config-yaml", "claude_model: test"),
+        ("/morning-signal/prompt-md", "# Test prompt"),
+        ("/morning-signal/flow-doctor-telegram-bot-token", "ssm-token"),
+        ("/morning-signal/flow-doctor-telegram-chat-id", "8606899594"),
+    ]:
+        ssm.put_parameter(Name=name, Value=value, Type="SecureString")
+
+    fresh_ge_module._maybe_load_from_ssm()
+
+    # Local-env override preserved.
+    assert os.environ["FLOW_DOCTOR_TELEGRAM_BOT_TOKEN"] == "local-override-token"
+    # Chat id (not pre-set locally) was filled from SSM.
+    assert os.environ["FLOW_DOCTOR_TELEGRAM_CHAT_ID"] == "8606899594"
+
+
 # ── publish_to_s3 ────────────────────────────────────────────────────────────
 
 
