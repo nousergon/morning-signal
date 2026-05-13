@@ -148,10 +148,12 @@ def notify_success(
         size_kb = audio_path.stat().st_size / 1024
         parts.append(f"Audio: `{audio_path.name}` ({size_kb:.0f} KB)")
 
-    # Late import to avoid a circular dependency between notify and episode.
-    from morning_signal.episode import _episode_stem
-
-    script_path = _config.SCRIPTS_DIR / f"{_episode_stem(args.date, args.edition)}.md"
+    # ``_episode_stem`` from episode.py is a one-line f-string. Inlining
+    # the stem here avoids importing back from episode (which would
+    # complete an episode→notify→episode cycle that CodeQL's
+    # ``py/cyclic-import`` rule flags).
+    stem = f"{args.date}-{args.edition}"
+    script_path = _config.SCRIPTS_DIR / f"{stem}.md"
     if script_path.exists():
         words = len(script_path.read_text().split())
         speed = float(config.get("tts", {}).get("speed", 1.0))
