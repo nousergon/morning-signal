@@ -16,7 +16,7 @@ base_url: "https://your-bucket-name.s3.us-west-2.amazonaws.com"
 # ── Podcast Metadata (Apple Podcasts / RSS) ─────────────────────────────────
 podcast:
   title: "Morning Signal"
-  description: "A sharp daily briefing on markets, tech, AI, and Seattle — auto-generated every morning."
+  description: "A sharp daily briefing on markets, tech, AI, and Seattle — auto-generated."
   author: ""
   email: ""  # optional, for iTunes owner tag
   language: "en-us"
@@ -27,13 +27,25 @@ podcast:
 
 # ── TTS (Amazon Polly — uses existing AWS credentials) ──────────────────────
 tts:
-  polly_voice: "Matthew"   # Matthew = deep/warm, Joanna = female, Stephen = British
+  polly_voice: "Ruth"      # Ruth = British female, Matthew = US male, Joanna = US female
   polly_engine: "neural"   # "neural" (best quality) or "standard"
+  speed: 1.5               # Playback speed multiplier; 1.0 = normal, 1.5 = fast brief
 
 # ── Generation ──────────────────────────────────────────────────────────────
-claude_model: "claude-sonnet-4-20250514"
-max_tokens: 4096
+claude_model: "claude-sonnet-4-6"  # Use the latest Sonnet for current Claude API
+max_tokens: 8192
 
 # Max episodes to keep in the RSS feed (older episodes remain in S3 but
 # drop off the feed to keep it lightweight).
 feed_max_episodes: 90
+
+# ── Notifications (optional, via SES) ───────────────────────────────────────
+# When enabled, sends a one-line success email after each successful run
+# and a multi-line failure email with traceback on uncaught exception.
+# `sender` must be a verified SES identity in your AWS account; in SES
+# sandbox mode the `recipients` must also be verified.
+notifications:
+  enabled: false
+  sender: ""
+  recipients: []
+  ses_region: "us-east-1"

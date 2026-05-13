@@ -1,0 +1,3 @@
+pytest>=7.4.0
+pytest-cov>=4.1.0
+moto[ses,s3,sts,ssm]>=5.0.0
