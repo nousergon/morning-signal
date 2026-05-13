@@ -35,7 +35,7 @@ morning-signal/
 ├── config.yaml.example    Configuration template
 ├── prompt.md              YOUR PODCAST — segments, sources, tone, length cap
 ├── run.sh                 Local-dev launcher (sources .env + venv → python)
-├── requirements.txt
+├── pyproject.toml         Build + dependency manifest (single source of truth)
 ├── artwork.jpg            Podcast cover art (3000×3000 recommended)
 ├── tests/                 pytest suite (run via `pytest --cov`)
 ├── episodes/              Generated MP3s + metadata JSON (gitignored)
@@ -49,7 +49,7 @@ morning-signal/
 
 ```bash
 git clone https://github.com/cipher813/morning-signal.git && cd morning-signal
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
 ### 2. Configure
@@ -210,7 +210,7 @@ One edition per day is half that. Add an always-on EC2 t3.micro (~$8/month) if y
 ## Tests
 
 ```bash
-.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install -e .[dev]
 .venv/bin/pytest --cov
 ```
 
