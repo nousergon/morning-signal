@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc5] — 2026-05-13
+
+### Fixed
+- **Progress spinner and stdlib `logging` lines no longer share a terminal line.** rc3 introduced a `rich.progress` spinner but the stdlib `StreamHandler` was emitting `[INFO]` lines via `\n` writes uncoordinated with rich's `\r` cursor redraws, producing visual smush like `0:01:25[12:34:56] Chunk 1/4 done`. Fixed by sharing a single `rich.console.Console` between `Progress` (`episode._CONSOLE`) and a `rich.logging.RichHandler` wired up in `cli._setup_logging()` when running in TTY mode. Non-TTY (systemd journal, cron) keeps the plain stdlib `StreamHandler` unchanged.
+
 ## [0.1.1rc4] — 2026-05-13
 
 ### Fixed
@@ -63,7 +68,8 @@ First public release on PyPI.
 - Requires Python 3.9+.
 - License: MIT.
 
-[Unreleased]: https://github.com/cipher813/morning-signal/compare/v0.1.1rc4...HEAD
+[Unreleased]: https://github.com/cipher813/morning-signal/compare/v0.1.1rc5...HEAD
+[0.1.1rc5]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc5
 [0.1.1rc4]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc4
 [0.1.1rc3]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc3
 [0.1.1rc2]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc2

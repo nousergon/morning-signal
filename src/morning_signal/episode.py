@@ -201,12 +201,22 @@ def main():
         _notify_success(args, config, audio_path)
 
 
+# Shared Console between Progress and the RichHandler logging in cli._setup_logging.
+# Defining it here lets both modules import the same instance so they coordinate
+# cursor/redraw operations instead of stepping on each other.
+try:
+    from rich.console import Console as _RichConsole
+    _CONSOLE = _RichConsole()
+except ImportError:
+    _CONSOLE = None
+
+
 def _make_progress():
     """Build a rich.progress context manager for TTY output, or a no-op for
     non-TTY (so systemd journal / cron logs stay clean plain text).
     """
     import sys
-    if not sys.stdout.isatty():
+    if not sys.stdout.isatty() or _CONSOLE is None:
         return _NullProgress()
     try:
         from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -214,6 +224,7 @@ def _make_progress():
             SpinnerColumn(),
             TextColumn("{task.description}"),
             TimeElapsedColumn(),
+            console=_CONSOLE,
             transient=False,
         )
     except ImportError:
