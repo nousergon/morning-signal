@@ -17,11 +17,14 @@ Requires:
     AWS credentials    — for Polly TTS + S3 publish (via env, ~/.aws/credentials, or IAM role)
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,12 +39,84 @@ EPISODES_DIR = BASE_DIR / "episodes"
 SCRIPTS_DIR = BASE_DIR / "scripts"
 FEED_FILE = BASE_DIR / "feed.xml"
 
+# AWS session used for all boto3 clients. None means "use default credential chain"
+# (which on the Mac is ~/.aws/credentials, and on the EC2 is the instance profile).
+# When MORNING_SIGNAL_RUNNER_ROLE_ARN is set, this gets replaced with an
+# AssumeRole-derived Session via _load_runner_session().
+_AWS_SESSION = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("morning-signal")
+
+
+# ── AWS Session + SSM Loading ───────────────────────────────────────────────
+
+def _aws_client(service: str, **kwargs):
+    """Get a boto3 client, routing through the runner-role session if one was assumed."""
+    if _AWS_SESSION is not None:
+        return _AWS_SESSION.client(service, **kwargs)
+    import boto3
+    return boto3.client(service, **kwargs)
+
+
+def _load_runner_session():
+    """If MORNING_SIGNAL_RUNNER_ROLE_ARN is set, AssumeRole and return a Session.
+
+    Returns None for the Mac dev path (env var unset) → boto3 falls back to
+    the default credential chain.
+    """
+    role_arn = os.environ.get("MORNING_SIGNAL_RUNNER_ROLE_ARN")
+    if not role_arn:
+        return None
+    import boto3
+    sts = boto3.client("sts")
+    session_name = f"morning-signal-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+    log.info(f"AssumeRole: {role_arn} (session={session_name})")
+    creds = sts.assume_role(RoleArn=role_arn, RoleSessionName=session_name)["Credentials"]
+    return boto3.Session(
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+    )
+
+
+def _maybe_load_from_ssm():
+    """If MORNING_SIGNAL_USE_SSM=1, fetch config + prompt + Anthropic key from SSM
+    and override CONFIG_FILE / PROMPT_FILE / ANTHROPIC_API_KEY env var.
+
+    No-op on the Mac dev path (env var unset) → local files used.
+    """
+    if os.environ.get("MORNING_SIGNAL_USE_SSM") != "1":
+        return
+
+    global CONFIG_FILE, PROMPT_FILE
+
+    ssm_region = os.environ.get("MORNING_SIGNAL_SSM_REGION", "us-east-1")
+    ssm = _aws_client("ssm", region_name=ssm_region)
+
+    def fetch(name: str) -> str:
+        return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="morning-signal-"))
+    tmpdir.chmod(0o700)
+
+    config_path = tmpdir / "config.yaml"
+    prompt_path = tmpdir / "prompt.md"
+    config_path.write_text(fetch("/morning-signal/config-yaml"))
+    prompt_path.write_text(fetch("/morning-signal/prompt-md"))
+    config_path.chmod(0o600)
+    prompt_path.chmod(0o600)
+    CONFIG_FILE = config_path
+    PROMPT_FILE = prompt_path
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ["ANTHROPIC_API_KEY"] = fetch("/morning-signal/anthropic-api-key")
+
+    log.info(f"SSM: loaded config + prompt + Anthropic key (tmpdir={tmpdir})")
 
 
 def load_config() -> dict:
@@ -103,14 +178,12 @@ def generate_script(config: dict, date_str: str) -> str:
 
 def tts_polly(script: str, output_path: Path, config: dict) -> None:
     """Synthesize speech via Amazon Polly. Uses existing AWS credentials."""
-    import boto3
-
     tts_cfg = config.get("tts", {})
     voice_id = tts_cfg.get("polly_voice", "Matthew")
     engine = tts_cfg.get("polly_engine", "neural")
     region = config.get("s3_region", "us-west-2")
 
-    polly = boto3.client("polly", region_name=region)
+    polly = _aws_client("polly", region_name=region)
     log.info(f"TTS: Polly engine={engine}, voice={voice_id}")
 
     # Polly limit: 3000 chars per request for neural engine
@@ -148,17 +221,21 @@ def tts_polly(script: str, output_path: Path, config: dict) -> None:
 
 # ── S3 Publishing ───────────────────────────────────────────────────────────
 
-def publish_to_s3(config: dict) -> None:
-    """Upload episodes + feed.xml + artwork to S3."""
-    import boto3
+def publish_to_s3(config: dict, fresh_uploads: set | None = None) -> None:
+    """Upload episodes + feed.xml + artwork to S3.
 
+    fresh_uploads is a set of MP3 filenames that were generated in this run
+    and must always be uploaded (overwriting any existing S3 object). HEAD-skip
+    only applies to historical MP3s not in this set.
+    """
+    fresh_uploads = fresh_uploads or set()
     bucket = config["s3_bucket"]
     region = config.get("s3_region", "us-west-2")
     prefix = config.get("s3_prefix", "").strip("/")
     if prefix:
         prefix += "/"
 
-    s3 = boto3.client("s3", region_name=region)
+    s3 = _aws_client("s3", region_name=region)
 
     def upload(local_path: Path, s3_key: str, content_type: str):
         log.info(f"  -> s3://{bucket}/{s3_key}")
@@ -169,9 +246,15 @@ def publish_to_s3(config: dict) -> None:
 
     log.info(f"Publishing to s3://{bucket}/{prefix}...")
 
-    # Upload episode MP3s (only new ones — check if exists)
+    # Upload episode MP3s. Fresh-this-run files always overwrite; older files
+    # HEAD-skip if S3 already has them (avoids re-uploading the back-catalog
+    # on every run).
     for mp3 in sorted(EPISODES_DIR.glob("*.mp3")):
         s3_key = f"{prefix}episodes/{mp3.name}"
+        if mp3.name in fresh_uploads:
+            log.info(f"  ~~ {mp3.name} (fresh — overwriting)")
+            upload(mp3, s3_key, "audio/mpeg")
+            continue
         try:
             s3.head_object(Bucket=bucket, Key=s3_key)
             log.info(f"  == {mp3.name} (already uploaded)")
@@ -253,7 +336,74 @@ def save_metadata(date_str: str, script_path: Path, audio_path: Path | None) -> 
     (EPISODES_DIR / f"{date_str}.json").write_text(json.dumps(meta, indent=2))
 
 
+# ── Notifications ───────────────────────────────────────────────────────────
+
+def _send_ses(subject: str, body: str, config: dict) -> None:
+    """Send a notification email via SES. No-op if notifications not configured."""
+    notif = config.get("notifications", {})
+    if not notif.get("enabled"):
+        return
+    sender = notif.get("sender")
+    recipients = notif.get("recipients", [])
+    region = notif.get("ses_region", "us-east-1")
+    if not sender or not recipients:
+        log.warning("notifications.enabled=true but sender/recipients missing; skipping send")
+        return
+    try:
+        ses = _aws_client("ses", region_name=region)
+        ses.send_email(
+            Source=sender,
+            Destination={"ToAddresses": recipients},
+            Message={
+                "Subject": {"Data": subject, "Charset": "utf-8"},
+                "Body": {"Text": {"Data": body, "Charset": "utf-8"}},
+            },
+        )
+        log.info(f"notify: sent → {','.join(recipients)} [{subject}]")
+    except Exception as e:
+        log.error(f"notify: SES send failed: {e}")
+
+
+def _notify_success(args, config: dict, audio_path: Path | None) -> None:
+    parts = [f"Episode {args.date} ready.", ""]
+    if audio_path and audio_path.exists():
+        size_kb = audio_path.stat().st_size / 1024
+        parts.append(f"Audio: {audio_path.name} ({size_kb:.0f} KB)")
+    script_path = SCRIPTS_DIR / f"{args.date}.md"
+    if script_path.exists():
+        words = len(script_path.read_text().split())
+        parts.append(f"Script: ~{words} words (~{words / 150:.1f} min spoken)")
+    feed_url = config.get("base_url", "").rstrip("/") + "/feed.xml"
+    if feed_url:
+        parts.append("")
+        parts.append(f"Feed: {feed_url}")
+    _send_ses(f"✓ Morning Signal {args.date}", "\n".join(parts), config)
+
+
+def _notify_failure(args, config: dict, exc: BaseException, traceback_str: str) -> None:
+    body = (
+        f"Episode {args.date} FAILED.\n\n"
+        f"Error type: {type(exc).__name__}\n"
+        f"Error: {exc}\n\n"
+        f"Traceback (last 30 lines):\n"
+        + "\n".join(traceback_str.splitlines()[-30:])
+    )
+    _send_ses(f"✗ Morning Signal {args.date} FAILED", body, config)
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
+
+def _existing_episode(date_str: str) -> bool:
+    """True if a complete episode already exists for this date (JSON + audio_file ref)."""
+    meta_path = EPISODES_DIR / f"{date_str}.json"
+    if not meta_path.exists():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    return bool(meta.get("audio_file"))
+
 
 def main():
     parser = argparse.ArgumentParser(description="Morning Signal podcast generator")
@@ -264,29 +414,53 @@ def main():
                         help="Generate locally, skip S3")
     parser.add_argument("--publish-only", action="store_true",
                         help="Rebuild feed and re-publish existing episodes")
+    parser.add_argument("--force", action="store_true",
+                        help="Force regenerate + re-upload even if episode already exists")
     args = parser.parse_args()
+
+    global _AWS_SESSION
+    _AWS_SESSION = _load_runner_session()
+    _maybe_load_from_ssm()
 
     config = load_config()
     EPISODES_DIR.mkdir(parents=True, exist_ok=True)
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    if not args.publish_only:
-        # Generate
-        script = generate_script(config, args.date)
-        script_path = save_script(script, args.date)
+    # Front-door dedup: don't re-burn Claude+Polly+S3 on accidental re-runs.
+    if not args.publish_only and not args.force and _existing_episode(args.date):
+        log.info(f"Episode {args.date} already exists; skipping (use --force to regenerate).")
+        return
 
-        audio_path = None
-        if not args.script_only:
-            audio_path = EPISODES_DIR / f"{args.date}.mp3"
-            tts_polly(script, audio_path, config)
+    audio_path = None
+    fresh_uploads: set[str] = set()
+    try:
+        if not args.publish_only:
+            # Generate
+            script = generate_script(config, args.date)
+            script_path = save_script(script, args.date)
 
-        save_metadata(args.date, script_path, audio_path)
+            if not args.script_only:
+                audio_path = EPISODES_DIR / f"{args.date}.mp3"
+                tts_polly(script, audio_path, config)
+                fresh_uploads.add(audio_path.name)
 
-    # Publish
-    if not args.script_only and not args.no_publish:
-        publish_to_s3(config)
+            save_metadata(args.date, script_path, audio_path)
 
-    log.info("Done.")
+        # Publish
+        if not args.script_only and not args.no_publish:
+            publish_to_s3(config, fresh_uploads=fresh_uploads)
+
+        log.info("Done.")
+    except BaseException as exc:
+        import traceback
+        tb = traceback.format_exc()
+        log.error(f"FAILED: {type(exc).__name__}: {exc}")
+        _notify_failure(args, config, exc, tb)
+        raise
+
+    # Success — notify only for full pipeline runs (not script-only / publish-only)
+    if not args.script_only and not args.publish_only:
+        _notify_success(args, config, audio_path)
 
 
 if __name__ == "__main__":
