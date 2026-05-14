@@ -8,4 +8,4 @@ set -a
 source "$PROJECT_DIR/.env"
 set +a
 
-exec "$PROJECT_DIR/.venv/bin/python" generate_episode.py "$@"
+exec "$PROJECT_DIR/.venv/bin/python" generate_episode.py generate "$@"
