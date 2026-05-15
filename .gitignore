@@ -31,5 +31,7 @@ ROADMAP.md
 implementation-plan-*.md
 private/
 
-# IAM policy staging (review before applying; final JSONs version-tracked in alpha-engine-config/private-docs/morning-signal/iam/)
+# IAM policy staging (local review/scratch only). Canonical version-tracked
+# source of truth is the PRIVATE alpha-engine-config repo at
+# apps/morning-signal/iam/ — account-scoped IAM is kept out of this public repo.
 .iam-staging/
