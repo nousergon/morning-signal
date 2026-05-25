@@ -5,6 +5,6 @@ with Amazon Polly, publishes the MP3 + RSS feed to S3, and optionally emails
 a success/failure notification via SES.
 """
 
-__version__ = "0.1.1rc5"
+__version__ = "0.1.1rc6"
 
 __all__ = ["__version__"]
