@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc7] — 2026-05-25
+
+### Fixed
+- **PyPI publish path unblocked.** `alpha-engine-lib` is now on PyPI (`0.32.0`), so the `pyproject.toml` dep flips from a `git+https://…@v0.32.0` direct reference to a standard PyPI spec (`alpha-engine-lib>=0.32,<0.33`). rc6 failed to publish with `400 Bad Request` because PyPI rejects published packages whose metadata contains direct-URL deps. The `[tool.hatch.metadata] allow-direct-references = true` opt-in is no longer needed and has been removed. Library code is otherwise unchanged from rc6.
+
 ## [0.1.1rc6] — 2026-05-25
 
 ### Added
