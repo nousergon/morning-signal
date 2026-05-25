@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc8] — 2026-05-25
+
+### Changed
+- **`cost_telemetry.record_call_cost` now delegates to `alpha_engine_lib.cost.record_anthropic_call`** (lifted in lib v0.33.0). The local helper shrinks ~50 → ~15 lines; lib owns token + tool-request extraction, default rate-card lookup, USD recompute, and JSONL-ready dict shape. morning-signal still stamps `date` + `edition` onto the record and writes the per-episode JSONL. Public API unchanged: `record_call_cost(*, msg, date_str, edition, episodes_dir) -> float`. JSONL file shape preserved. (PR #28 + alpha-engine-lib #69 — second-recurrence-lift rule, the lib chokepoint now serves data + executor + morning-signal.)
+- Bumped `alpha-engine-lib` pin from `>=0.32,<0.33` to `>=0.33,<0.34`.
+
 ## [0.1.1rc7] — 2026-05-25
 
 ### Fixed
