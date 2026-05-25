@@ -1,9 +1,9 @@
 """Per-call Anthropic cost telemetry sink for morning-signal episodes.
 
-Wraps :mod:`alpha_engine_lib.cost`: maps an Anthropic SDK ``Message.usage``
-onto a ``ModelMetadata``, recomputes USD cost against the packaged-default
-rate card (including per-request ``web_search`` / ``web_fetch`` fees),
-and appends one JSONL record per API call to::
+Thin wrapper around :func:`alpha_engine_lib.cost.record_anthropic_call`
+(the lib-side capture chokepoint lifted in v0.33.0 from the original
+shape of this module). Stamps ``date`` + ``edition`` onto the lib's
+JSONL record + writes one line per call to::
 
     episodes/{date}-{edition}.cost.jsonl
 
@@ -23,16 +23,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from alpha_engine_lib.cost import (
-    load_default_pricing,
-    load_default_tool_fees,
-    metadata_from_anthropic_message,
-    recompute_cost,
-)
+from alpha_engine_lib.cost import record_anthropic_call
 
 if TYPE_CHECKING:
     from anthropic.types import Message
@@ -53,35 +47,20 @@ def record_call_cost(
     Returns the USD cost (also embedded in the record). The caller may
     log it; the JSONL is the durable artifact.
     """
-    metadata = metadata_from_anthropic_message(msg)
-    cost = recompute_cost(
-        metadata,
-        load_default_pricing(),
-        tool_fee_table=load_default_tool_fees(),
+    record = record_anthropic_call(
+        msg,
+        extra_fields={"date": date_str, "edition": edition},
     )
-
-    record = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "date": date_str,
-        "edition": edition,
-        "model": metadata.model_name,
-        "input_tokens": metadata.input_tokens,
-        "output_tokens": metadata.output_tokens,
-        "cache_read_tokens": metadata.cache_read_tokens,
-        "cache_create_tokens": metadata.cache_create_tokens,
-        "web_search_requests": metadata.web_search_requests,
-        "web_fetch_requests": metadata.web_fetch_requests,
-        "cost_usd": metadata.cost_usd,
-    }
 
     episodes_dir.mkdir(parents=True, exist_ok=True)
     out_path = episodes_dir / f"{date_str}-{edition}.cost.jsonl"
     with out_path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
 
+    cost = record["cost_usd"]
     log.info(
-        f"Cost: ${cost:.4f} (in={metadata.input_tokens} "
-        f"out={metadata.output_tokens} "
-        f"search={metadata.web_search_requests})"
+        f"Cost: ${cost:.4f} (in={record['input_tokens']} "
+        f"out={record['output_tokens']} "
+        f"search={record['web_search_requests']})"
     )
     return cost
