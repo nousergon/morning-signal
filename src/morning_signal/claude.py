@@ -6,7 +6,9 @@ import logging
 import sys
 from datetime import datetime
 
+from morning_signal import config as _config
 from morning_signal.config import load_prompt
+from morning_signal.cost_telemetry import record_call_cost
 
 log = logging.getLogger("morning-signal")
 
@@ -42,6 +44,13 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
                 ),
             }
         ],
+    )
+
+    record_call_cost(
+        msg=response,
+        date_str=date_str,
+        edition=edition,
+        episodes_dir=_config.EPISODES_DIR,
     )
 
     script_parts = [b.text for b in response.content if b.type == "text"]
