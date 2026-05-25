@@ -39,8 +39,11 @@ dependencies = [
     # against a packaged price card. Consumer of
     # ``alpha_engine_lib.cost.record_anthropic_call`` (lifted to lib
     # in v0.33.0 after data + executor became consumers #2 + #3 of the
-    # capture pattern morning-signal originated).
-    "alpha-engine-lib>=0.33,<0.34",
+    # capture pattern morning-signal originated). 0.33 → 0.36 minor
+    # bumps add ``pipeline_status``, ``ssm_dispatcher``, and RAG
+    # cleanup — none of which morning-signal consumes; ``cost`` and
+    # ``trading_calendar`` surfaces are byte-identical across the range.
+    "alpha-engine-lib>=0.36,<0.37",
 ]
 
 [project.optional-dependencies]
