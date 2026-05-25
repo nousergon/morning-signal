@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc6] — 2026-05-25
+
 ### Added
 - **Weekend / non-trading-day deep-dive prompt (`prompt_weekend.md`).** On Saturdays, Sundays, and NYSE holidays the AM edition now ships a deeper (~3,000-word) brief focused on frontier models, research papers, AI infrastructure, applied AI products, tech industry moves, and the open-source / dev ecosystem — markets/macro/portfolio segments are replaced with the tech/AI deep-dive content. Selected via `alpha_engine_lib.trading_calendar.is_trading_day`. Loaded from `/morning-signal/prompt-weekend-md` in SSM mode; falls back to the weekday prompt with a WARN if the SSM param is missing.
 - **Non-trading-day PM editions are now skipped.** Cron still fires both AM + PM daily, but `episode.main()` exits cleanly (no Claude / Polly / S3, no failure email) when the PM edition lands on a weekend or NYSE holiday. The single weekend AM "weekend edition" replaces both.
