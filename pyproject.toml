@@ -41,7 +41,7 @@ dependencies = [
     # of the alpha-engine-lib cost primitive (first = alpha-engine-research),
     # which is what unlocked the v0.30.0 SDK adapter + v0.31.0 tool-fee
     # surface upstream.
-    "alpha-engine-lib @ git+https://github.com/cipher813/alpha-engine-lib@v0.31.0",
+    "alpha-engine-lib @ git+https://github.com/cipher813/alpha-engine-lib@v0.32.0",
 ]
 
 [project.optional-dependencies]
