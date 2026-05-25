@@ -40,7 +40,7 @@ dependencies = [
     # ``alpha_engine_lib.cost.record_anthropic_call`` (lifted to lib
     # in v0.33.0 after data + executor became consumers #2 + #3 of the
     # capture pattern morning-signal originated).
-    "alpha-engine-lib>=0.33,<0.34",
+    "alpha-engine-lib>=0.33,<0.36",
 ]
 
 [project.optional-dependencies]
