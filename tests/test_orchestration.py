@@ -145,14 +145,19 @@ def test_generate_script_passes_edition_to_user_message(fresh_ge_module, tmp_pat
         out = fresh_ge_module.generate_script(
             {"claude_model": "claude-sonnet-4-6", "max_tokens": 100}, "2026-05-14", "am"
         )
-    assert out == "Today's script."
+    # Prefill is prepended to the API response so the saved script begins
+    # with the canonical welcome line — see claude.opening_line().
+    assert out == "Welcome to Morning Signal. Today's script."
 
-    # Confirm the user message correctly mentions MORNING edition
+    # User message correctly mentions MORNING edition; assistant prefill
+    # is the second message and pins the opening line.
     _, kwargs = client.messages.create.call_args
-    user_content = kwargs["messages"][0]["content"]
+    msgs = kwargs["messages"]
+    user_content = msgs[0]["content"]
     assert "MORNING" in user_content
     assert "morning" in user_content
     assert "# fake prompt" in user_content
+    assert msgs[1] == {"role": "assistant", "content": "Welcome to Morning Signal."}
 
 
 def test_generate_script_exits_on_empty_response(fresh_ge_module, tmp_path):
@@ -179,11 +184,67 @@ def test_generate_script_pm_edition_label(fresh_ge_module, tmp_path):
     anth_mock, client = _make_anthropic_mock("PM script.")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path):
-        fresh_ge_module.generate_script(
+        out = fresh_ge_module.generate_script(
             {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "pm"
         )
     _, kwargs = client.messages.create.call_args
-    assert "EVENING" in kwargs["messages"][0]["content"]
+    msgs = kwargs["messages"]
+    assert "EVENING" in msgs[0]["content"]
+    assert msgs[1] == {
+        "role": "assistant",
+        "content": "Welcome to Morning Signal, evening edition.",
+    }
+    assert out.startswith("Welcome to Morning Signal, evening edition.")
+
+
+def test_generate_script_weekend_uses_weekend_prompt_and_prefill(fresh_ge_module, tmp_path):
+    """2026-05-16 is a Saturday → weekend prompt + weekend prefill."""
+    weekday_prompt = tmp_path / "p.md"
+    weekday_prompt.write_text("# WEEKDAY prompt — must NOT be sent on Saturday")
+    weekend_prompt = tmp_path / "p_weekend.md"
+    weekend_prompt.write_text("# WEEKEND deep-dive prompt")
+
+    anth_mock, client = _make_anthropic_mock("Deep-dive body.")
+    with patch.dict(sys.modules, {"anthropic": anth_mock}), \
+         patch.object(_config, "PROMPT_FILE", weekday_prompt), \
+         patch.object(_config, "PROMPT_WEEKEND_FILE", weekend_prompt):
+        out = fresh_ge_module.generate_script(
+            {"claude_model": "x", "max_tokens": 1}, "2026-05-16", "am"
+        )
+
+    _, kwargs = client.messages.create.call_args
+    msgs = kwargs["messages"]
+    assert "WEEKEND deep-dive prompt" in msgs[0]["content"]
+    assert "WEEKDAY prompt" not in msgs[0]["content"]
+    assert "WEEKEND" in msgs[0]["content"]
+    assert msgs[1] == {
+        "role": "assistant",
+        "content": "Welcome to Morning Signal, weekend edition.",
+    }
+    assert out.startswith("Welcome to Morning Signal, weekend edition.")
+    assert "Deep-dive body." in out
+
+
+def test_is_non_trading_day_weekend_and_holiday(fresh_ge_module):
+    # Saturday + Sunday
+    assert fresh_ge_module.is_non_trading_day("2026-05-16") is True
+    assert fresh_ge_module.is_non_trading_day("2026-05-17") is True
+    # Weekday
+    assert fresh_ge_module.is_non_trading_day("2026-05-14") is False
+    # Memorial Day 2026 (NYSE closed)
+    assert fresh_ge_module.is_non_trading_day("2026-05-25") is True
+
+
+def test_opening_line_variants(fresh_ge_module):
+    assert fresh_ge_module.opening_line("am", weekend=False) == "Welcome to Morning Signal."
+    assert (
+        fresh_ge_module.opening_line("pm", weekend=False)
+        == "Welcome to Morning Signal, evening edition."
+    )
+    assert (
+        fresh_ge_module.opening_line("am", weekend=True)
+        == "Welcome to Morning Signal, weekend edition."
+    )
 
 
 # ── main() orchestration ─────────────────────────────────────────────────────
@@ -315,6 +376,36 @@ def test_main_dry_run_exits_before_api_calls(
 
     assert called == []  # no API calls
     assert any("DRY RUN" in r.message for r in caplog.records)
+
+
+@mock_aws
+def test_main_skips_pm_on_non_trading_day(
+    fresh_ge_module, aws_env, tmp_episodes_dir, tmp_scripts_dir,
+    sample_config, monkeypatch, tmp_path, caplog,
+):
+    """PM cron fire on Sat/Sun/NYSE-holiday is a clean no-op — no Claude /
+    Polly / S3 calls, no failure email, exit 0."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(json.dumps(sample_config))
+    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
+
+    called = []
+    monkeypatch.setattr(fresh_ge_module, "generate_script", lambda *a, **kw: called.append("claude"))
+    monkeypatch.setattr(fresh_ge_module, "tts_polly", lambda *a, **kw: called.append("polly"))
+    monkeypatch.setattr(fresh_ge_module, "publish_to_s3", lambda *a, **kw: called.append("s3"))
+
+    # 2026-05-16 is a Saturday
+    monkeypatch.setattr(sys, "argv", [
+        "morning-signal", "--date", "2026-05-16", "--edition", "pm",
+    ])
+    with caplog.at_level("INFO"):
+        fresh_ge_module.main()
+
+    assert called == []
+    assert any("Skipping PM edition" in r.message for r in caplog.records)
+    # No script / metadata written for the skipped edition
+    assert not (tmp_scripts_dir / "2026-05-16-pm.md").exists()
+    assert not (tmp_episodes_dir / "2026-05-16-pm.json").exists()
 
 
 def test_main_default_edition_auto_detected(

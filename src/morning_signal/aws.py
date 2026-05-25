@@ -93,6 +93,24 @@ def _maybe_load_from_ssm() -> None:
     _config.CONFIG_FILE = config_path
     _config.PROMPT_FILE = prompt_path
 
+    # Weekend prompt is optional in SSM — if missing (e.g., during the
+    # rollout where the SSM param hasn't been created yet), fall back
+    # to the weekday prompt with a WARN log so non-trading-day editions
+    # don't hard-fail. Operator should add /morning-signal/prompt-weekend-md
+    # to enable the deep-dive content.
+    prompt_weekend_path = tmpdir / "prompt_weekend.md"
+    weekend_text = fetch_optional("/morning-signal/prompt-weekend-md")
+    if weekend_text is not None:
+        prompt_weekend_path.write_text(weekend_text)
+        prompt_weekend_path.chmod(0o600)
+        _config.PROMPT_WEEKEND_FILE = prompt_weekend_path
+    else:
+        log.warning(
+            "SSM: /morning-signal/prompt-weekend-md missing — non-trading-day "
+            "editions will fall back to the weekday prompt until it is added"
+        )
+        _config.PROMPT_WEEKEND_FILE = prompt_path
+
     if not os.environ.get("ANTHROPIC_API_KEY"):
         os.environ["ANTHROPIC_API_KEY"] = fetch("/morning-signal/anthropic-api-key")
 
