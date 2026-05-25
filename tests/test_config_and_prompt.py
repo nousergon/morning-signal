@@ -42,6 +42,30 @@ def test_load_prompt_exits_when_missing(fresh_ge_module, tmp_path):
             raise AssertionError("expected SystemExit")
 
 
+def test_load_prompt_weekend_reads_separate_file(fresh_ge_module, tmp_path):
+    weekday = tmp_path / "p.md"
+    weekend = tmp_path / "p_weekend.md"
+    weekday.write_text("weekday body")
+    weekend.write_text("  weekend body  \n")
+    with patch.object(_config, "PROMPT_FILE", weekday), \
+         patch.object(_config, "PROMPT_WEEKEND_FILE", weekend):
+        assert fresh_ge_module.load_prompt(weekend=False) == "weekday body"
+        assert fresh_ge_module.load_prompt(weekend=True) == "weekend body"
+
+
+def test_load_prompt_weekend_exits_when_missing(fresh_ge_module, tmp_path):
+    weekday = tmp_path / "p.md"
+    weekday.write_text("body")
+    with patch.object(_config, "PROMPT_FILE", weekday), \
+         patch.object(_config, "PROMPT_WEEKEND_FILE", tmp_path / "no_weekend.md"):
+        try:
+            fresh_ge_module.load_prompt(weekend=True)
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("expected SystemExit")
+
+
 def test_edition_labels_complete(fresh_ge_module):
     assert fresh_ge_module.EDITION_LABELS["am"] == "MORNING"
     assert fresh_ge_module.EDITION_LABELS["pm"] == "EVENING"

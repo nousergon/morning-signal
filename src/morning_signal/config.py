@@ -21,6 +21,7 @@ log = logging.getLogger("morning-signal")
 # The runtime can override them via env var or via _maybe_load_from_ssm.
 BASE_DIR = Path.cwd()
 PROMPT_FILE = BASE_DIR / "prompt.md"
+PROMPT_WEEKEND_FILE = BASE_DIR / "prompt_weekend.md"
 CONFIG_FILE = BASE_DIR / "config.yaml"
 EPISODES_DIR = BASE_DIR / "episodes"
 SCRIPTS_DIR = BASE_DIR / "scripts"
@@ -34,8 +35,9 @@ def load_config() -> dict:
     return yaml.safe_load(CONFIG_FILE.read_text())
 
 
-def load_prompt() -> str:
-    if not PROMPT_FILE.exists():
-        log.error(f"Prompt not found: {PROMPT_FILE}")
+def load_prompt(weekend: bool = False) -> str:
+    path = PROMPT_WEEKEND_FILE if weekend else PROMPT_FILE
+    if not path.exists():
+        log.error(f"Prompt not found: {path}")
         sys.exit(1)
-    return PROMPT_FILE.read_text().strip()
+    return path.read_text().strip()

@@ -72,7 +72,7 @@ def _default_edition() -> str:
 # ``__all__`` so static analyzers (CodeQL's py/unused-import, etc.)
 # treat them as intentional re-exports rather than dead imports.
 from morning_signal.aws import _aws_client, _load_runner_session, _maybe_load_from_ssm  # noqa: E402,F401
-from morning_signal.claude import EDITION_LABELS, generate_script  # noqa: E402,F401
+from morning_signal.claude import EDITION_LABELS, generate_script, is_non_trading_day, opening_line  # noqa: E402,F401
 from morning_signal.config import load_config, load_prompt  # noqa: E402,F401
 from morning_signal.notify import make_doctor, notify_success  # noqa: E402,F401
 from morning_signal.publish import publish_to_s3  # noqa: E402,F401
@@ -91,11 +91,13 @@ __all__ = [
     "_make_progress",
     "_maybe_load_from_ssm",
     "generate_script",
+    "is_non_trading_day",
     "load_config",
     "load_prompt",
     "main",
     "make_doctor",
     "notify_success",
+    "opening_line",
     "publish_to_s3",
     "save_metadata",
     "save_script",
@@ -111,6 +113,7 @@ __all__ = [
 _FORWARDED_ATTRS = {
     "CONFIG_FILE": ("config", "CONFIG_FILE"),
     "PROMPT_FILE": ("config", "PROMPT_FILE"),
+    "PROMPT_WEEKEND_FILE": ("config", "PROMPT_WEEKEND_FILE"),
     "EPISODES_DIR": ("config", "EPISODES_DIR"),
     "SCRIPTS_DIR": ("config", "SCRIPTS_DIR"),
     "FEED_FILE": ("config", "FEED_FILE"),
@@ -145,6 +148,11 @@ def _dry_run_report(config: dict, args) -> None:
         log.info(f"  AWS creds:         error checking: {e}")
     log.info(f"  Output dir:        {_config.EPISODES_DIR}")
     log.info(f"  Prompt:            {_config.PROMPT_FILE} ({_config.PROMPT_FILE.stat().st_size if _config.PROMPT_FILE.exists() else 0} bytes)")
+    log.info(f"  Weekend prompt:    {_config.PROMPT_WEEKEND_FILE} ({_config.PROMPT_WEEKEND_FILE.stat().st_size if _config.PROMPT_WEEKEND_FILE.exists() else 0} bytes)")
+    nontd = is_non_trading_day(args.date)
+    log.info(f"  Trading day check: {args.date} → {'NON-TRADING (weekend/holiday)' if nontd else 'trading day'}")
+    if nontd and args.edition == "pm":
+        log.info("  ↳ PM edition would be skipped (weekend AM ships the deeper edition).")
     log.info("Dry run complete — no API calls made, no files written.")
 
 
@@ -179,6 +187,15 @@ def main():
 
     _config.EPISODES_DIR.mkdir(parents=True, exist_ok=True)
     _config.SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Non-trading-day PM editions are skipped: weekends + NYSE holidays
+    # ship a single deeper AM "weekend edition" instead. Cron fires both
+    # AM + PM every day; the PM fire on a non-trading day no-ops here
+    # without invoking Claude / Polly / S3 and without an error path
+    # (cron exit 0, no failure email).
+    if not args.publish_only and args.edition == "pm" and is_non_trading_day(args.date):
+        log.info(f"Skipping PM edition for {args.date}: non-trading day (weekend AM ships the deeper edition).")
+        return
 
     # Front-door dedup: don't re-burn Claude+Polly+S3 on accidental re-runs.
     if not args.publish_only and not args.force and _existing_episode(args.date, args.edition):
