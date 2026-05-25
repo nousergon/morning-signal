@@ -33,7 +33,8 @@ morning-signal/
 ├── generate_episode.py    Main script — generates and publishes one episode
 ├── feed.py                RSS feed builder (Apple-compatible)
 ├── config.yaml.example    Configuration template
-├── prompt.md              YOUR PODCAST — segments, sources, tone, length cap
+├── prompt.md              YOUR PODCAST — weekday MORNING + EVENING editions
+├── prompt_weekend.md      Weekend / NYSE-holiday AM deep-dive (tech / AI / research)
 ├── run.sh                 Local-dev launcher (sources .env + venv → python)
 ├── pyproject.toml         Build + dependency manifest (single source of truth)
 ├── artwork.jpg            Podcast cover art (3000×3000 recommended)
@@ -102,7 +103,7 @@ The local CLI is fine for testing, but a laptop that sleeps at 5 AM won't run th
 The pipeline supports two environment-variable knobs that turn on production behavior:
 
 - `MORNING_SIGNAL_RUNNER_ROLE_ARN=<role-arn>` — at startup, call `sts:AssumeRole` and use that role's credentials for all subsequent boto3 clients. Lets you keep secrets/perms scoped to a dedicated runtime identity instead of the host's instance profile.
-- `MORNING_SIGNAL_USE_SSM=1` — fetch `config.yaml`, `prompt.md`, and `ANTHROPIC_API_KEY` from AWS SSM Parameter Store paths `/morning-signal/config-yaml`, `/morning-signal/prompt-md`, `/morning-signal/anthropic-api-key` (SecureString). Override the region with `MORNING_SIGNAL_SSM_REGION` (default `us-east-1`).
+- `MORNING_SIGNAL_USE_SSM=1` — fetch `config.yaml`, `prompt.md`, `prompt_weekend.md`, and `ANTHROPIC_API_KEY` from AWS SSM Parameter Store paths `/morning-signal/config-yaml`, `/morning-signal/prompt-md`, `/morning-signal/prompt-weekend-md`, `/morning-signal/anthropic-api-key` (SecureString). The weekend prompt is optional — falls back to the weekday prompt with a WARN log if missing. Override the region with `MORNING_SIGNAL_SSM_REGION` (default `us-east-1`).
 
 If neither is set, the script behaves as the local CLI — reads from disk, uses the default boto3 credential chain.
 
@@ -177,14 +178,30 @@ python generate_episode.py --publish-only
 
 Everything is controlled by two files:
 
-### `prompt.md` — Content + segments
+### `prompt.md` + `prompt_weekend.md` — Content + segments
 
-This is the production prompt sent to Claude. Edit freely:
+These are the production prompts sent to Claude. `prompt.md` drives the
+weekday MORNING + EVENING editions; `prompt_weekend.md` drives the
+Saturday / Sunday / NYSE-holiday AM "deep-dive" edition (the weekend
+PM cron fire is skipped — `episode.main()` no-ops cleanly).
+
+Edit freely:
 
 - Add / remove / reorder segments
 - Pin specific sources, tickers, or themes
-- Tune the word-count cap (the supplied prompt targets ~2,000 words ≈ 9 min audio at 1.5× playback)
+- Tune the word-count cap (weekday targets ~2,000 words ≈ 9 min audio
+  at 1.5× playback; weekend ~3,000 words ≈ 13 min)
 - Adjust the news-window instruction if you want one or two editions
+
+**For the cipher813 deployment specifically**, both prompt files are
+canonical-sourced from the private `alpha-engine-config` repo at
+`apps/morning-signal/prompts/` (with git history, PR review, and a
+`sync.sh` that pushes edits to SSM + the local dev cache in one step).
+The local `prompt*.md` files in this repo are gitignored proprietary IP
+and treated as a derived cache of the canonical source. Fresh public-repo
+clones get the example prompts via `morning-signal init` and edit them
+directly; there's no requirement to use a separate canonical-source repo
+unless you want PR-reviewed prompt changes.
 
 ### `config.yaml` — Infrastructure + metadata
 
