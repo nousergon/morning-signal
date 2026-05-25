@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc9] — 2026-05-25
+
+### Changed
+- Bumped `alpha-engine-lib` pin from `>=0.33,<0.34` to `>=0.36,<0.37`. The 0.33→0.36 minor bumps land `pipeline_status` v0.34/v0.35.1/v0.36 + Option-D execution-picker substrate, the `ssm_dispatcher` Python CLI chokepoint (v0.35.0), and an `LLMJudgeReranker` deletion (v0.34.0) — none of those modules are consumed here. The `cost` and `trading_calendar` surfaces morning-signal does consume are byte-identical across the range (verified via `git diff v0.33.0..v0.36.1 -- src/alpha_engine_lib/{cost,trading_calendar}.py` → empty).
+
 ## [0.1.1rc8] — 2026-05-25
 
 ### Changed
