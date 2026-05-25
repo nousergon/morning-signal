@@ -40,7 +40,19 @@ def opening_line(edition: str, weekend: bool) -> str:
 
 
 def generate_script(config: dict, date_str: str, edition: str) -> str:
-    """Call Claude with web search to generate the podcast script."""
+    """Call Claude with web search to generate the podcast script.
+
+    The production prompt is sent as a ``system`` block with ephemeral
+    ``cache_control`` so the ~1.3K-token static prefix is cached on the
+    first inference pass and replayed at the 0.1× cache-read rate on
+    every subsequent pass inside the ``web_search`` tool loop. The
+    user message is intentionally slim (~50 tokens of dynamic preamble)
+    so the cache breakpoint covers the maximal static prefix. The 5-min
+    ephemeral TTL is fine here — savings come from intra-call tool-loop
+    re-reads, not cross-call hits (AM↔PM are 12h apart). ``max_uses``
+    on ``web_search`` caps server-tool fees in the runaway case; 20 is
+    above the empirical typical (~15) so it's insurance not throttling.
+    """
     import anthropic
 
     client = anthropic.Anthropic(max_retries=5)
@@ -57,16 +69,28 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     response = client.messages.create(
         model=config.get("claude_model", "claude-sonnet-4-6"),
         max_tokens=config.get("max_tokens", 4096),
-        tools=[{"type": "web_search_20250305", "name": "web_search"}],
+        tools=[
+            {
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": config.get("web_search_max_uses", 20),
+            }
+        ],
+        system=[
+            {
+                "type": "text",
+                "text": prompt_text,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[
             {
                 "role": "user",
                 "content": (
                     f"Today is {friendly_date}. This is the {edition_label} edition "
                     f"of Morning Signal. Generate today's {edition_label.lower()} episode "
-                    f"per the production prompt below, respecting the News Window for this "
-                    f"edition (only news/events since the prior edition).\n\n"
-                    f"Production prompt:\n\n{prompt_text}"
+                    f"per the system prompt, respecting the News Window for this "
+                    f"edition (only news/events since the prior edition)."
                 ),
             },
             {
