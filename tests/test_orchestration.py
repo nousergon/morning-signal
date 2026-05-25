@@ -105,12 +105,29 @@ def test_tts_polly_applies_speed_adjust(
 
 
 def _make_anthropic_mock(text: str = "Generated script body."):
-    """Build a fake anthropic.Anthropic client where messages.create returns a text block."""
+    """Build a fake anthropic.Anthropic client where messages.create returns
+    a text block.
+
+    Note ``response.model`` + ``response.usage`` are populated with
+    real-typed values (not bare MagicMocks) so the cost-telemetry path —
+    which feeds ``response`` through ``metadata_from_anthropic_message``
+    → ``ModelMetadata`` (pydantic-validated) — accepts them. Without
+    this the int / str fields would receive MagicMock instances and
+    pydantic would raise on the first call.
+    """
     block = MagicMock()
     block.type = "text"
     block.text = text
+    usage = MagicMock()
+    usage.input_tokens = 100
+    usage.output_tokens = 200
+    usage.cache_read_input_tokens = None
+    usage.cache_creation_input_tokens = None
+    usage.server_tool_use = None
     response = MagicMock()
     response.content = [block]
+    response.model = "claude-sonnet-4-6"
+    response.usage = usage
     client_inst = MagicMock()
     client_inst.messages.create.return_value = response
     anthropic_module = MagicMock()

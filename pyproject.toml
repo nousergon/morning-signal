@@ -35,6 +35,13 @@ dependencies = [
     # 0.5.0 series is in its rc cycle, pin the rc explicitly; drop
     # the `rc` suffix once 0.5.0 final ships.
     "flow-doctor==0.5.0rc3",
+    # Anthropic cost telemetry — token + server-tool fee accounting
+    # against a packaged price card. Sole consumer here is
+    # ``morning_signal.cost_telemetry``; this is the second adoption
+    # of the alpha-engine-lib cost primitive (first = alpha-engine-research),
+    # which is what unlocked the v0.30.0 SDK adapter + v0.31.0 tool-fee
+    # surface upstream.
+    "alpha-engine-lib @ git+https://github.com/cipher813/alpha-engine-lib@v0.31.0",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +58,13 @@ morning-signal = "morning_signal.cli:main"
 Homepage = "https://github.com/cipher813/morning-signal"
 Repository = "https://github.com/cipher813/morning-signal"
 Issues = "https://github.com/cipher813/morning-signal/issues"
+
+[tool.hatch.metadata]
+# Required by hatchling to accept the ``alpha-engine-lib`` git+https
+# direct reference in [project.dependencies]. Hatchling defaults to PyPI-
+# only refs; this opts the project in to URL-pinned deps. Standard PyPI
+# version specs (anthropic, boto3, ...) are unaffected.
+allow-direct-references = true
 
 [tool.hatch.version]
 path = "src/morning_signal/__init__.py"
