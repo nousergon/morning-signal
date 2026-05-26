@@ -1,0 +1,52 @@
+name: Live API Smoke
+
+# Catches Anthropic payload-shape regressions that the mocked unit-test
+# suite cannot see (e.g. the 2026-05-26 server-tool ⊥ assistant-prefill
+# HTTP 400 that slipped past CI because tests mock messages.create()).
+#
+# Triggers ONLY on PRs whose diff touches files that affect the payload
+# shape sent to Anthropic. Other PRs (test-only refactors, docs, CI
+# config unrelated to the smoke) skip this workflow entirely.
+#
+# Cost: one max_tokens=1 messages.create() call per smoke ≈ $0.001 per
+# triggered run. Negligible vs the cost of one silent-failed 5 AM cron.
+#
+# Secret gate: requires repo secret ANTHROPIC_API_KEY. Forks without
+# the secret get a clean skip (the script exits 0 when the env var is
+# unset) rather than a failing CI status, so external contributors can
+# still PR without bothering Brian for access.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/morning_signal/claude.py"
+      - "prompt.md"
+      - "prompt_weekend.md"
+      - "config.yaml*"
+      - "pyproject.toml"
+      - "tests/live_api_smoke.py"
+      - ".github/workflows/live-api-smoke.yml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Dispatch live-API smoke (max_tokens=1)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python tests/live_api_smoke.py

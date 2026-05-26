@@ -145,20 +145,23 @@ def test_generate_script_passes_edition_to_user_message(fresh_ge_module, tmp_pat
         out = fresh_ge_module.generate_script(
             {"claude_model": "claude-sonnet-4-6", "max_tokens": 100}, "2026-05-14", "am"
         )
-    # Prefill is prepended to the API response so the saved script begins
-    # with the canonical welcome line — see claude.opening_line().
+    # Mock returned "Today's script." (no canonical opener) — post-process
+    # MUST prepend the opener so downstream TTS sees the welcome line.
     assert out == "Welcome to Morning Signal. Today's script."
 
-    # User message correctly mentions MORNING edition; assistant prefill
-    # is the second message and pins the opening line. The production
-    # prompt now lives in the ``system`` parameter with ephemeral cache
-    # control so the 0.1× cache-read rate applies on tool-loop re-reads.
+    # User message correctly mentions MORNING edition AND carries the
+    # opener-instruction (this replaces the old assistant prefill, which
+    # the Anthropic API rejects when web_search is in `tools`).
     _, kwargs = client.messages.create.call_args
     msgs = kwargs["messages"]
+    assert len(msgs) == 1  # no assistant prefill — server-tool ⊥ prefill
     user_content = msgs[0]["content"]
     assert "MORNING" in user_content
     assert "morning" in user_content
-    # Prompt body moved out of the user message into ``system`` (cache target).
+    # Opener instruction reached the user message
+    assert "Welcome to Morning Signal." in user_content
+    assert "MUST begin verbatim" in user_content
+    # Prompt body lives in the ``system`` cache block, not the user msg
     assert "# fake prompt" not in user_content
     system_block = kwargs["system"]
     assert isinstance(system_block, list) and len(system_block) == 1
@@ -166,7 +169,6 @@ def test_generate_script_passes_edition_to_user_message(fresh_ge_module, tmp_pat
     assert system_block[0]["cache_control"] == {"type": "ephemeral"}
     # web_search is bounded to prevent runaway server-tool fees.
     assert kwargs["tools"][0]["max_uses"] == 20
-    assert msgs[1] == {"role": "assistant", "content": "Welcome to Morning Signal."}
 
 
 def test_generate_script_exits_on_empty_response(fresh_ge_module, tmp_path):
@@ -198,11 +200,9 @@ def test_generate_script_pm_edition_label(fresh_ge_module, tmp_path):
         )
     _, kwargs = client.messages.create.call_args
     msgs = kwargs["messages"]
+    assert len(msgs) == 1
     assert "EVENING" in msgs[0]["content"]
-    assert msgs[1] == {
-        "role": "assistant",
-        "content": "Welcome to Morning Signal, evening edition.",
-    }
+    assert "Welcome to Morning Signal, evening edition." in msgs[0]["content"]
     assert out.startswith("Welcome to Morning Signal, evening edition.")
 
 
@@ -223,14 +223,12 @@ def test_generate_script_weekend_uses_weekend_prompt_and_prefill(fresh_ge_module
 
     _, kwargs = client.messages.create.call_args
     msgs = kwargs["messages"]
+    assert len(msgs) == 1
     # Weekend prompt is in the ``system`` cache block, NOT the user message.
     assert kwargs["system"][0]["text"] == "# WEEKEND deep-dive prompt"
     assert "WEEKDAY prompt" not in msgs[0]["content"]
     assert "WEEKEND" in msgs[0]["content"]
-    assert msgs[1] == {
-        "role": "assistant",
-        "content": "Welcome to Morning Signal, weekend edition.",
-    }
+    assert "Welcome to Morning Signal, weekend edition." in msgs[0]["content"]
     assert out.startswith("Welcome to Morning Signal, weekend edition.")
     assert "Deep-dive body." in out
 
@@ -281,6 +279,91 @@ def test_opening_line_variants(fresh_ge_module):
         fresh_ge_module.opening_line("am", weekend=True)
         == "Welcome to Morning Signal, weekend edition."
     )
+
+
+# ── _validate_request_payload (server-tool ⊥ prefill chokepoint) ─────────────
+
+
+def test_validate_request_payload_rejects_server_tool_plus_assistant_prefill(fresh_ge_module):
+    """The producer-side guard that catches the 2026-05-26 regression
+    class: web_search (or any server tool) combined with a trailing
+    assistant prefill returns HTTP 400 from Anthropic. The validator
+    raises ValueError at construction time so the failure surfaces at
+    PR time, not at 5 AM in production.
+    """
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Welcome"},
+    ]
+    tools = [{"type": "web_search_20250305", "name": "web_search"}]
+    with pytest.raises(ValueError, match="server-side tools"):
+        fresh_ge_module._validate_request_payload(messages, tools)
+
+
+def test_validate_request_payload_allows_server_tool_without_prefill(fresh_ge_module):
+    fresh_ge_module._validate_request_payload(
+        [{"role": "user", "content": "hi"}],
+        [{"type": "web_search_20250305", "name": "web_search"}],
+    )
+
+
+def test_validate_request_payload_allows_prefill_without_server_tool(fresh_ge_module):
+    fresh_ge_module._validate_request_payload(
+        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "y"}],
+        [],
+    )
+
+
+def test_validate_request_payload_rejects_computer_use_plus_prefill(fresh_ge_module):
+    """Same invariant generalizes across all server-side tool prefixes
+    (web_search_*, computer_use_*, bash_*, text_editor_*) — assert one
+    of the others to defend against per-prefix regression."""
+    with pytest.raises(ValueError, match="server-side tools"):
+        fresh_ge_module._validate_request_payload(
+            [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "y"}],
+            [{"type": "computer_use_20250124", "name": "computer"}],
+        )
+
+
+# ── post-process opener enforcement ──────────────────────────────────────────
+
+
+def test_generate_script_prepends_opener_when_model_drops_it(fresh_ge_module, tmp_path):
+    """Belt-and-suspenders: if the model ignores the user-message
+    opener instruction, post-process MUST prepend the canonical
+    opener so downstream TTS gets a correctly-formatted intro.
+    """
+    prompt_path = tmp_path / "p.md"
+    prompt_path.write_text("prompt")
+
+    anth_mock, _ = _make_anthropic_mock("Here is today's briefing.")
+    with patch.dict(sys.modules, {"anthropic": anth_mock}), \
+         patch.object(_config, "PROMPT_FILE", prompt_path):
+        out = fresh_ge_module.generate_script(
+            {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
+        )
+    assert out.startswith("Welcome to Morning Signal.")
+    assert "Here is today's briefing." in out
+
+
+def test_generate_script_does_not_double_prepend_when_model_obeys(fresh_ge_module, tmp_path):
+    """When the model obeys the instruction the response already starts
+    with the canonical opener — post-process MUST NOT prepend a second
+    copy, otherwise TTS speaks the welcome line twice.
+    """
+    prompt_path = tmp_path / "p.md"
+    prompt_path.write_text("prompt")
+
+    anth_mock, _ = _make_anthropic_mock(
+        "Welcome to Morning Signal. Here is today's briefing."
+    )
+    with patch.dict(sys.modules, {"anthropic": anth_mock}), \
+         patch.object(_config, "PROMPT_FILE", prompt_path):
+        out = fresh_ge_module.generate_script(
+            {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
+        )
+    assert out.count("Welcome to Morning Signal.") == 1
+    assert out.startswith("Welcome to Morning Signal.")
 
 
 # ── main() orchestration ─────────────────────────────────────────────────────
