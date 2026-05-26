@@ -35,6 +35,13 @@ tts:
 claude_model: "claude-sonnet-4-6"  # Use the latest Sonnet for current Claude API
 max_tokens: 8192
 
+# Hard cap on Anthropic ``web_search`` server-tool requests per episode.
+# Insurance against runaway loops — Anthropic bills $10 per 1,000 search
+# requests. Typical episodes use ~15 searches across the 9 segments;
+# 20 sits above that as a ceiling, not a throttle. Omit to use the
+# in-code default of 20.
+web_search_max_uses: 20
+
 # Max episodes to keep in the RSS feed (older episodes remain in S3 but
 # drop off the feed to keep it lightweight).
 feed_max_episodes: 90

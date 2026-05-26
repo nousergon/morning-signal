@@ -150,13 +150,22 @@ def test_generate_script_passes_edition_to_user_message(fresh_ge_module, tmp_pat
     assert out == "Welcome to Morning Signal. Today's script."
 
     # User message correctly mentions MORNING edition; assistant prefill
-    # is the second message and pins the opening line.
+    # is the second message and pins the opening line. The production
+    # prompt now lives in the ``system`` parameter with ephemeral cache
+    # control so the 0.1× cache-read rate applies on tool-loop re-reads.
     _, kwargs = client.messages.create.call_args
     msgs = kwargs["messages"]
     user_content = msgs[0]["content"]
     assert "MORNING" in user_content
     assert "morning" in user_content
-    assert "# fake prompt" in user_content
+    # Prompt body moved out of the user message into ``system`` (cache target).
+    assert "# fake prompt" not in user_content
+    system_block = kwargs["system"]
+    assert isinstance(system_block, list) and len(system_block) == 1
+    assert system_block[0]["text"] == "# fake prompt"
+    assert system_block[0]["cache_control"] == {"type": "ephemeral"}
+    # web_search is bounded to prevent runaway server-tool fees.
+    assert kwargs["tools"][0]["max_uses"] == 20
     assert msgs[1] == {"role": "assistant", "content": "Welcome to Morning Signal."}
 
 
@@ -214,7 +223,8 @@ def test_generate_script_weekend_uses_weekend_prompt_and_prefill(fresh_ge_module
 
     _, kwargs = client.messages.create.call_args
     msgs = kwargs["messages"]
-    assert "WEEKEND deep-dive prompt" in msgs[0]["content"]
+    # Weekend prompt is in the ``system`` cache block, NOT the user message.
+    assert kwargs["system"][0]["text"] == "# WEEKEND deep-dive prompt"
     assert "WEEKDAY prompt" not in msgs[0]["content"]
     assert "WEEKEND" in msgs[0]["content"]
     assert msgs[1] == {
@@ -223,6 +233,32 @@ def test_generate_script_weekend_uses_weekend_prompt_and_prefill(fresh_ge_module
     }
     assert out.startswith("Welcome to Morning Signal, weekend edition.")
     assert "Deep-dive body." in out
+
+
+def test_generate_script_web_search_max_uses_is_configurable(fresh_ge_module, tmp_path):
+    """``web_search_max_uses`` config knob overrides the default cap of 20.
+
+    Defends the runaway-cost insurance surface: the field MUST land on
+    the ``web_search`` tool spec so Anthropic's server-side search loop
+    honors it. A regression here silently re-opens the unbounded-fee
+    failure mode.
+    """
+    prompt_path = tmp_path / "p.md"
+    prompt_path.write_text("prompt")
+
+    anth_mock, client = _make_anthropic_mock("script body")
+    with patch.dict(sys.modules, {"anthropic": anth_mock}), \
+         patch.object(_config, "PROMPT_FILE", prompt_path):
+        fresh_ge_module.generate_script(
+            {"claude_model": "x", "max_tokens": 1, "web_search_max_uses": 5},
+            "2026-05-14",
+            "am",
+        )
+
+    _, kwargs = client.messages.create.call_args
+    tool = kwargs["tools"][0]
+    assert tool["type"] == "web_search_20250305"
+    assert tool["max_uses"] == 5
 
 
 def test_is_non_trading_day_weekend_and_holiday(fresh_ge_module):

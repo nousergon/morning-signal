@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc10] — 2026-05-25
+
+### Changed
+- **Anthropic prompt caching enabled on the production prompt.** The ~1.3K-token static prompt now ships as a `system` block with `cache_control: {"type": "ephemeral"}` (5-min TTL); the user message shrinks to the dynamic preamble (date + edition label). Inside one `messages.create` call, the `web_search` tool loop triggers N+1 inference passes (one per search-decision + final synthesis), each of which re-reads the conversation prefix. Before this change every pass paid the full $3.00/1M input rate on the prompt; now pass #1 pays the $3.75/1M cache-write rate once and passes 2..N pay the $0.30/1M cache-read rate (10× discount). Cross-call (AM→PM) hits don't apply — the 12h gap exceeds the 5-min TTL — but intra-call savings are typically ~80% on the prompt-token portion of input. Lib-side telemetry already captures `cache_read_tokens` / `cache_create_tokens` (lifted in v0.31.0+) so the JSONL records the discount automatically; no `cost_telemetry.py` change required.
+- **`web_search` `max_uses` cap added (default 20).** The `web_search_20250305` tool now ships with `max_uses` taken from `config.web_search_max_uses` (default 20). Web search is billed at $10/1k requests by Anthropic; an uncapped tool spec lets a runaway loop or malformed prompt rack up unbounded server-tool fees. 20 sits above the empirical typical (~15 searches per episode for the 9-segment briefing) so this is insurance, not throttling. Config knob is optional — omit it and 20 applies.
+
 ## [0.1.1rc9] — 2026-05-25
 
 ### Changed
