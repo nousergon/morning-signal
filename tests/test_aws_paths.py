@@ -94,36 +94,151 @@ def test_maybe_load_from_ssm_is_noop_without_flag(fresh_ge_module, monkeypatch):
     assert fresh_ge_module.PROMPT_FILE == before_prompt
 
 
+def _seed_ssm_and_s3(
+    *,
+    region: str = REGION_OTHER,
+    bucket: str = "test-bucket",
+    prompts_prefix: str = "prompts/",
+    config_extras: str = "",
+    anthropic_key: str = "sk-fake-key",
+    prompt_md: str = "# Test prompt",
+    prompt_weekend_md: str | None = None,
+    prompt_public_md: str | None = None,
+    extra_ssm_params: dict[str, str] | None = None,
+) -> None:
+    """Seed the SSM params + S3 objects the bootstrap path reads.
+
+    SSM keeps: anthropic-api-key + config-yaml (small structured/secret).
+    S3 keeps:  prompt.md (+ optional weekend / public) at
+               s3://{bucket}/{prompts_prefix}<file>.
+
+    Bucket creation routed to ``REGION_S3`` (us-west-2) to match the
+    aws_env fixture's ``AWS_DEFAULT_REGION``; moto rejects a
+    LocationConstraint mismatch.
+    """
+    ssm = boto3.client("ssm", region_name=region)
+    ssm.put_parameter(
+        Name="/morning-signal/anthropic-api-key", Value=anthropic_key, Type="SecureString",
+    )
+    config_body = f"s3_bucket: {bucket}\nprompts_s3_prefix: {prompts_prefix}\n"
+    if config_extras:
+        config_body += config_extras
+    ssm.put_parameter(
+        Name="/morning-signal/config-yaml", Value=config_body, Type="SecureString",
+    )
+    for name, value in (extra_ssm_params or {}).items():
+        ssm.put_parameter(Name=name, Value=value, Type="SecureString")
+
+    s3 = boto3.client("s3", region_name=REGION_S3)
+    s3.create_bucket(
+        Bucket=bucket,
+        CreateBucketConfiguration={"LocationConstraint": REGION_S3},
+    )
+    s3.put_object(Bucket=bucket, Key=f"{prompts_prefix}prompt.md", Body=prompt_md.encode())
+    if prompt_weekend_md is not None:
+        s3.put_object(
+            Bucket=bucket, Key=f"{prompts_prefix}prompt_weekend.md",
+            Body=prompt_weekend_md.encode(),
+        )
+    if prompt_public_md is not None:
+        s3.put_object(
+            Bucket=bucket, Key=f"{prompts_prefix}prompt_public.md",
+            Body=prompt_public_md.encode(),
+        )
+
+
 @mock_aws
 def test_maybe_load_from_ssm_fetches_and_overrides_paths(
     fresh_ge_module, aws_env, monkeypatch
 ):
     monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
     monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
-    # Make sure ANTHROPIC_API_KEY starts unset so we can confirm SSM populates it
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
-    ssm = boto3.client("ssm", region_name=REGION_OTHER)
-    ssm.put_parameter(
-        Name="/morning-signal/anthropic-api-key", Value="sk-fake-key", Type="SecureString"
-    )
-    ssm.put_parameter(
-        Name="/morning-signal/config-yaml", Value="claude_model: test", Type="SecureString"
-    )
-    ssm.put_parameter(
-        Name="/morning-signal/prompt-md", Value="# Test prompt", Type="SecureString"
-    )
+    _seed_ssm_and_s3(prompt_md="# Test prompt")
 
     fresh_ge_module._maybe_load_from_ssm()
 
     # Paths should have been redirected to a tmpdir
     assert "morning-signal-" in str(fresh_ge_module.CONFIG_FILE)
     assert "morning-signal-" in str(fresh_ge_module.PROMPT_FILE)
-    # Files should contain the SSM contents
-    assert fresh_ge_module.CONFIG_FILE.read_text() == "claude_model: test"
+    # config-yaml from SSM, prompt.md from S3
+    assert "s3_bucket: test-bucket" in fresh_ge_module.CONFIG_FILE.read_text()
     assert fresh_ge_module.PROMPT_FILE.read_text() == "# Test prompt"
     # ANTHROPIC_API_KEY should have been exported into env
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-fake-key"
+
+
+@mock_aws
+def test_maybe_load_from_ssm_fails_loudly_when_s3_bucket_missing_from_config(
+    fresh_ge_module, aws_env, monkeypatch
+):
+    """If config-yaml in SSM doesn't declare ``s3_bucket``, the bootstrap
+    cannot locate the prompt objects. Per ``feedback_no_silent_fails``,
+    raise loudly rather than silently leaving the personal prompt unset."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    ssm = boto3.client("ssm", region_name=REGION_OTHER)
+    ssm.put_parameter(
+        Name="/morning-signal/anthropic-api-key", Value="sk", Type="SecureString",
+    )
+    # config-yaml present but missing the s3_bucket key
+    ssm.put_parameter(
+        Name="/morning-signal/config-yaml", Value="claude_model: x\n",
+        Type="SecureString",
+    )
+
+    with pytest.raises(RuntimeError, match="s3_bucket"):
+        fresh_ge_module._maybe_load_from_ssm()
+
+
+@mock_aws
+def test_maybe_load_from_ssm_loads_optional_weekend_and_public_prompts(
+    fresh_ge_module, aws_env, monkeypatch
+):
+    """When the weekend and public prompts exist in S3, they're staged
+    to tmpdir and the config module's PROMPT_*_FILE paths point at them."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    _seed_ssm_and_s3(
+        prompt_md="weekday",
+        prompt_weekend_md="weekend deep dive",
+        prompt_public_md="public 10-topic catalog",
+    )
+
+    fresh_ge_module._maybe_load_from_ssm()
+
+    assert fresh_ge_module.PROMPT_FILE.read_text() == "weekday"
+    assert fresh_ge_module.PROMPT_WEEKEND_FILE.read_text() == "weekend deep dive"
+    assert fresh_ge_module.PROMPT_PUBLIC_FILE.read_text() == "public 10-topic catalog"
+
+
+@mock_aws
+def test_maybe_load_from_ssm_weekend_optional_falls_back_when_absent_from_s3(
+    fresh_ge_module, aws_env, monkeypatch, caplog
+):
+    """During the migration rollout window the weekend object may not
+    have been pushed to S3 yet. Boot should not hard-fail — fall back
+    to the weekday prompt with a WARN log so non-trading-day editions
+    still produce output until ``./sync.sh`` is run."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    _seed_ssm_and_s3(prompt_md="weekday only")  # no weekend, no public
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        fresh_ge_module._maybe_load_from_ssm()
+
+    # Fallback: weekend path equals weekday path
+    assert fresh_ge_module.PROMPT_WEEKEND_FILE == fresh_ge_module.PROMPT_FILE
+    # WARN was emitted
+    assert any("prompt_weekend.md" in r.message for r in caplog.records)
 
 
 @mock_aws
@@ -138,15 +253,10 @@ def test_maybe_load_from_ssm_loads_telegram_creds_when_present(
     monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_CHAT_ID", raising=False)
 
-    ssm = boto3.client("ssm", region_name=REGION_OTHER)
-    for name, value in [
-        ("/morning-signal/anthropic-api-key", "sk-fake-key"),
-        ("/morning-signal/config-yaml", "claude_model: test"),
-        ("/morning-signal/prompt-md", "# Test prompt"),
-        ("/morning-signal/flow-doctor-telegram-bot-token", "9999:fake-token"),
-        ("/morning-signal/flow-doctor-telegram-chat-id", "8606899594"),
-    ]:
-        ssm.put_parameter(Name=name, Value=value, Type="SecureString")
+    _seed_ssm_and_s3(extra_ssm_params={
+        "/morning-signal/flow-doctor-telegram-bot-token": "9999:fake-token",
+        "/morning-signal/flow-doctor-telegram-chat-id": "8606899594",
+    })
 
     fresh_ge_module._maybe_load_from_ssm()
 
@@ -166,14 +276,7 @@ def test_maybe_load_from_ssm_tolerates_missing_telegram_params(
     monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_CHAT_ID", raising=False)
 
-    ssm = boto3.client("ssm", region_name=REGION_OTHER)
-    # Seed only the required params (no /morning-signal/flow-doctor-*)
-    for name, value in [
-        ("/morning-signal/anthropic-api-key", "sk-fake-key"),
-        ("/morning-signal/config-yaml", "claude_model: test"),
-        ("/morning-signal/prompt-md", "# Test prompt"),
-    ]:
-        ssm.put_parameter(Name=name, Value=value, Type="SecureString")
+    _seed_ssm_and_s3()  # no telegram params
 
     # Must NOT raise on the missing Telegram params.
     fresh_ge_module._maybe_load_from_ssm()
@@ -192,15 +295,10 @@ def test_maybe_load_from_ssm_respects_local_env_override(
     monkeypatch.setenv("FLOW_DOCTOR_TELEGRAM_BOT_TOKEN", "local-override-token")
     monkeypatch.delenv("FLOW_DOCTOR_TELEGRAM_CHAT_ID", raising=False)
 
-    ssm = boto3.client("ssm", region_name=REGION_OTHER)
-    for name, value in [
-        ("/morning-signal/anthropic-api-key", "sk-fake-key"),
-        ("/morning-signal/config-yaml", "claude_model: test"),
-        ("/morning-signal/prompt-md", "# Test prompt"),
-        ("/morning-signal/flow-doctor-telegram-bot-token", "ssm-token"),
-        ("/morning-signal/flow-doctor-telegram-chat-id", "8606899594"),
-    ]:
-        ssm.put_parameter(Name=name, Value=value, Type="SecureString")
+    _seed_ssm_and_s3(extra_ssm_params={
+        "/morning-signal/flow-doctor-telegram-bot-token": "ssm-token",
+        "/morning-signal/flow-doctor-telegram-chat-id": "8606899594",
+    })
 
     fresh_ge_module._maybe_load_from_ssm()
 

@@ -114,6 +114,7 @@ _FORWARDED_ATTRS = {
     "CONFIG_FILE": ("config", "CONFIG_FILE"),
     "PROMPT_FILE": ("config", "PROMPT_FILE"),
     "PROMPT_WEEKEND_FILE": ("config", "PROMPT_WEEKEND_FILE"),
+    "PROMPT_PUBLIC_FILE": ("config", "PROMPT_PUBLIC_FILE"),
     "EPISODES_DIR": ("config", "EPISODES_DIR"),
     "SCRIPTS_DIR": ("config", "SCRIPTS_DIR"),
     "FEED_FILE": ("config", "FEED_FILE"),
