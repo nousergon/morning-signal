@@ -42,6 +42,17 @@ max_tokens: 8192
 # in-code default of 20.
 web_search_max_uses: 20
 
+# ── Public-topics mode (soak for the upcoming iOS-app product) ─────────────
+# When ``true``: load ``prompt_public.md`` (the 10-topic catalog) instead of
+# ``prompt.md`` / ``prompt_weekend.md``, and inject 5 active topics per
+# edition (3 fixed — Markets & Economy + Politics + Technology — plus 2
+# rotating wildcards from a 7-set, via deterministic round-robin). Designed
+# to dogfood the public-app catalog through Brian's existing morning-signal
+# cron before building the iOS-app topic-pack-cache infrastructure. Default
+# ``false`` preserves the personal-prompt behavior. See
+# ``src/morning_signal/topic_rotation.py`` for the rotation invariants.
+public_topics_mode: false
+
 # Max episodes to keep in the RSS feed (older episodes remain in S3 but
 # drop off the feed to keep it lightweight).
 feed_max_episodes: 90

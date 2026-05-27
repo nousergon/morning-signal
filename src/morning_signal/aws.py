@@ -111,6 +111,20 @@ def _maybe_load_from_ssm() -> None:
         )
         _config.PROMPT_WEEKEND_FILE = prompt_path
 
+    # Public-topics prompt is optional in SSM — only loaded when
+    # ``public_topics_mode: true`` in config.yaml. When the soak is off
+    # (the default) this param can be absent without warning. When the
+    # operator flips the soak on but the param is missing, ``load_prompt``
+    # will hard-fail loudly at episode generation time per the existing
+    # "Prompt not found" path — that's the right surface (fail at the
+    # call site, not silently fall back to the personal prompt).
+    prompt_public_path = tmpdir / "prompt_public.md"
+    public_text = fetch_optional("/morning-signal/prompt-public-md")
+    if public_text is not None:
+        prompt_public_path.write_text(public_text)
+        prompt_public_path.chmod(0o600)
+        _config.PROMPT_PUBLIC_FILE = prompt_public_path
+
     if not os.environ.get("ANTHROPIC_API_KEY"):
         os.environ["ANTHROPIC_API_KEY"] = fetch("/morning-signal/anthropic-api-key")
 

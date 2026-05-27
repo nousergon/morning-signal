@@ -16,6 +16,7 @@ from morning_signal import config as _config
 from morning_signal.config import load_prompt
 from morning_signal.cost_telemetry import record_call_cost
 from morning_signal.search_telemetry import record_searches
+from morning_signal.topic_rotation import active_topics_for_edition
 
 log = logging.getLogger("morning-signal")
 
@@ -68,7 +69,8 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
 
     client = anthropic.Anthropic(max_retries=5)
     weekend = is_non_trading_day(date_str)
-    prompt_text = load_prompt(weekend=weekend)
+    public_mode = bool(config.get("public_topics_mode", False))
+    prompt_text = load_prompt(weekend=weekend, public_mode=public_mode)
 
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     friendly_date = dt.strftime("%A, %B %-d, %Y")
@@ -80,11 +82,23 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     tools = [
         build_web_search_tool(max_uses=config.get("web_search_max_uses", 20))
     ]
+
+    if public_mode:
+        topics = active_topics_for_edition(date_str, edition)
+        log.info(f"Public-topics-mode active. Topics: {', '.join(topics)}")
+        topics_line = (
+            f" Active topics for this edition (cover only these, in this "
+            f"order, ~400 words each): {', '.join(topics)}."
+        )
+    else:
+        topics_line = ""
+
     user_content = (
         f"Today is {friendly_date}. This is the {edition_label} edition "
-        f"of Morning Signal. Generate today's {edition_label.lower()} episode "
-        f"per the system prompt, respecting the News Window for this "
-        f"edition (only news/events since the prior edition).\n\n"
+        f"of Morning Signal.{topics_line} Generate today's "
+        f"{edition_label.lower()} episode per the system prompt, respecting "
+        f"the News Window for this edition (only news/events since the "
+        f"prior edition).\n\n"
         f"Your response MUST begin verbatim with this exact line, "
         f"with no preamble or acknowledgement before it:\n\n"
         f"{opener}"
