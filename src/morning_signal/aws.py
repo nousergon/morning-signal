@@ -1,13 +1,26 @@
-"""AWS session management + SSM Parameter Store loading.
+"""AWS session management + SSM + S3 bootstrap loading.
 
 Two production-mode hooks:
 - `MORNING_SIGNAL_RUNNER_ROLE_ARN`: assume that role at startup, route all
   subsequent boto3 clients through the assumed-role session.
-- `MORNING_SIGNAL_USE_SSM=1`: fetch config + prompt + Anthropic key from SSM
-  Parameter Store under `/morning-signal/*` and override the local file paths.
+- `MORNING_SIGNAL_USE_SSM=1`: fetch config + Anthropic key from SSM Parameter
+  Store under `/morning-signal/*`, then fetch the prompt files from S3 under
+  `s3://{s3_bucket}/{prompts_s3_prefix}*` using the bucket + prefix declared
+  in config.yaml. Override the local file paths so `config.load_prompt()` etc
+  read the tmpdir copies.
 
-When neither is set, behaves as a vanilla local CLI: default boto3 credential
-chain, files read from disk per `config.py`.
+Why the split. Prompts moved off SSM 2026-05-27 because SSM Advanced-tier
+parameters are capped at 8,192 chars, and `prompt_public.md` (PR alpha-engine-
+config #336) is larger. S3 has no comparable size cap and the morning-signal-
+runner-role already holds `s3:GetObject` on the bucket. SSM keeps small
+structured config (config-yaml) + secrets (anthropic-api-key, telegram creds)
+where the SecureString primitive is the right home; S3 keeps content whose
+size is a function of the product. See `feedback_sota_institutional_default
+_no_shortcuts`.
+
+When neither MORNING_SIGNAL_USE_SSM nor _RUNNER_ROLE_ARN is set, behaves as a
+vanilla local CLI: default boto3 credential chain, files read from disk per
+`config.py`.
 """
 
 from __future__ import annotations
@@ -84,42 +97,80 @@ def _maybe_load_from_ssm() -> None:
     tmpdir = Path(tempfile.mkdtemp(prefix="morning-signal-"))
     tmpdir.chmod(0o700)
 
+    # Config-yaml lives in SSM (small, structured, fits comfortably).
     config_path = tmpdir / "config.yaml"
-    prompt_path = tmpdir / "prompt.md"
     config_path.write_text(fetch("/morning-signal/config-yaml"))
-    prompt_path.write_text(fetch("/morning-signal/prompt-md"))
     config_path.chmod(0o600)
-    prompt_path.chmod(0o600)
     _config.CONFIG_FILE = config_path
+
+    # Parse config now — need s3_bucket + prompts_s3_prefix to know where
+    # to fetch prompts from. Done inline rather than calling
+    # ``config.load_config()`` because that would re-read the file and we
+    # have the text in hand.
+    import yaml
+    cfg = yaml.safe_load(config_path.read_text()) or {}
+    s3_bucket = cfg.get("s3_bucket")
+    prompts_prefix = cfg.get("prompts_s3_prefix", "prompts/")
+    if not s3_bucket:
+        log.error(
+            "SSM bootstrap: config-yaml is missing required ``s3_bucket`` "
+            "key — cannot locate prompt objects in S3"
+        )
+        raise RuntimeError("config-yaml missing s3_bucket")
+
+    s3 = _aws_client("s3", region_name=ssm_region)
+
+    def fetch_s3(key: str) -> str:
+        """Read an S3 object body as UTF-8 text."""
+        resp = s3.get_object(Bucket=s3_bucket, Key=key)
+        return resp["Body"].read().decode("utf-8")
+
+    def fetch_s3_optional(key: str) -> Optional[str]:
+        """S3 read that tolerates NoSuchKey — for prompts whose absence
+        is acceptable per-install (weekend / public_mode rollout window)."""
+        try:
+            return fetch_s3(key)
+        except Exception as e:
+            cls = type(e).__name__
+            if cls == "NoSuchKey" or "NoSuchKey" in str(e) or "Not Found" in str(e):
+                log.info(f"S3: optional object s3://{s3_bucket}/{key} not found, skipping")
+                return None
+            raise
+
+    # Weekday prompt is required. S3-side path is canonical; if absent the
+    # whole boot must fail loud (no silent fallback to a stale on-disk copy).
+    prompt_path = tmpdir / "prompt.md"
+    prompt_path.write_text(fetch_s3(f"{prompts_prefix}prompt.md"))
+    prompt_path.chmod(0o600)
     _config.PROMPT_FILE = prompt_path
 
-    # Weekend prompt is optional in SSM — if missing (e.g., during the
-    # rollout where the SSM param hasn't been created yet), fall back
-    # to the weekday prompt with a WARN log so non-trading-day editions
-    # don't hard-fail. Operator should add /morning-signal/prompt-weekend-md
-    # to enable the deep-dive content.
+    # Weekend prompt is optional in S3 — if missing (rollout window where the
+    # object hasn't been pushed yet), fall back to the weekday prompt with a
+    # WARN log so non-trading-day editions don't hard-fail. Operator should
+    # ``./sync.sh`` from alpha-engine-config to push the weekend prompt to S3.
     prompt_weekend_path = tmpdir / "prompt_weekend.md"
-    weekend_text = fetch_optional("/morning-signal/prompt-weekend-md")
+    weekend_text = fetch_s3_optional(f"{prompts_prefix}prompt_weekend.md")
     if weekend_text is not None:
         prompt_weekend_path.write_text(weekend_text)
         prompt_weekend_path.chmod(0o600)
         _config.PROMPT_WEEKEND_FILE = prompt_weekend_path
     else:
         log.warning(
-            "SSM: /morning-signal/prompt-weekend-md missing — non-trading-day "
-            "editions will fall back to the weekday prompt until it is added"
+            f"S3: s3://{s3_bucket}/{prompts_prefix}prompt_weekend.md "
+            "missing — non-trading-day editions will fall back to the "
+            "weekday prompt until ``./sync.sh`` is run"
         )
         _config.PROMPT_WEEKEND_FILE = prompt_path
 
-    # Public-topics prompt is optional in SSM — only loaded when
+    # Public-topics prompt is optional in S3 — only loaded when
     # ``public_topics_mode: true`` in config.yaml. When the soak is off
-    # (the default) this param can be absent without warning. When the
-    # operator flips the soak on but the param is missing, ``load_prompt``
-    # will hard-fail loudly at episode generation time per the existing
+    # (the default) the object can be absent without warning. When the
+    # operator flips the soak on but the object is missing, ``load_prompt``
+    # hard-fails loudly at episode generation time per the existing
     # "Prompt not found" path — that's the right surface (fail at the
     # call site, not silently fall back to the personal prompt).
     prompt_public_path = tmpdir / "prompt_public.md"
-    public_text = fetch_optional("/morning-signal/prompt-public-md")
+    public_text = fetch_s3_optional(f"{prompts_prefix}prompt_public.md")
     if public_text is not None:
         prompt_public_path.write_text(public_text)
         prompt_public_path.chmod(0o600)
