@@ -36,9 +36,12 @@ from pathlib import Path
 # `python tests/live_api_smoke.py` from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from alpha_engine_lib.anthropic_payload import (  # noqa: E402
+    build_messages_payload,
+    build_web_search_tool,
+)
 from morning_signal.claude import (  # noqa: E402
     EDITION_LABELS,
-    _validate_request_payload,
     opening_line,
 )
 
@@ -53,47 +56,32 @@ def _build_smoke_payload() -> dict:
     """Build a payload with the SAME shape ``generate_script`` produces:
     server-tool (``web_search_20250305`` + ``max_uses=20``), cached
     system block, single user message with the opener instruction
-    embedded, NO assistant prefill. Runs through
-    ``_validate_request_payload`` so any future drift between the
-    smoke and the production validator surfaces here too.
+    embedded, NO assistant prefill. Routes through
+    ``alpha_engine_lib.anthropic_payload.build_messages_payload`` so
+    any future drift between the smoke and the production validator
+    surfaces here too — the lib's ``validate_payload`` runs at
+    construction time.
     """
     edition = "am"
     weekend = False
     opener = opening_line(edition, weekend)
     edition_label = EDITION_LABELS[edition]
 
-    tools = [
-        {
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": 20,
-        }
-    ]
-    messages = [
-        {
-            "role": "user",
-            "content": (
-                f"This is the {edition_label} edition of Morning Signal "
-                f"(CI smoke).\n\n"
-                f"Your response MUST begin verbatim with this exact line, "
-                f"with no preamble:\n\n{opener}"
-            ),
-        }
-    ]
-    _validate_request_payload(messages, tools)
-    return {
-        "model": SMOKE_MODEL,
-        "max_tokens": 1,
-        "tools": tools,
-        "system": [
-            {
-                "type": "text",
-                "text": SMOKE_SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        "messages": messages,
-    }
+    tools = [build_web_search_tool(max_uses=20)]
+    user_content = (
+        f"This is the {edition_label} edition of Morning Signal "
+        f"(CI smoke).\n\n"
+        f"Your response MUST begin verbatim with this exact line, "
+        f"with no preamble:\n\n{opener}"
+    )
+    return build_messages_payload(
+        model=SMOKE_MODEL,
+        system_prompt=SMOKE_SYSTEM_PROMPT,
+        user_content=user_content,
+        max_tokens=1,
+        tools=tools,
+        cache_system=True,
+    )
 
 
 def main() -> int:

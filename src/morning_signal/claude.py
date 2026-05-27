@@ -6,6 +6,10 @@ import logging
 import sys
 from datetime import datetime
 
+from alpha_engine_lib.anthropic_payload import (
+    build_messages_payload,
+    build_web_search_tool,
+)
 from alpha_engine_lib.trading_calendar import is_trading_day
 
 from morning_signal import config as _config
@@ -15,21 +19,6 @@ from morning_signal.cost_telemetry import record_call_cost
 log = logging.getLogger("morning-signal")
 
 EDITION_LABELS = {"am": "MORNING", "pm": "EVENING"}
-
-# Anthropic server-side tool types. When ANY of these appears in `tools`,
-# the API rejects a conversation that ends with an `assistant` message
-# (prefill) with HTTP 400 "This model does not support assistant message
-# prefill. The conversation must end with a user message." Surfaced
-# 2026-05-26 — the 5/25-night PR #33 cache-control change shipped with
-# the historical prefill+web_search combo; first failing run was 5/26 PM
-# (00:00 UTC) and 5/26 AM (12:00 UTC). The producer-side validator below
-# rejects this combo at PR time so it can never reach a 5 AM cron firing.
-_SERVER_TOOL_PREFIXES = (
-    "web_search_",
-    "computer_use_",
-    "bash_",
-    "text_editor_",
-)
 
 
 def is_non_trading_day(date_str: str) -> bool:
@@ -42,41 +31,18 @@ def opening_line(edition: str, weekend: bool) -> str:
 
     Instructed via the dynamic user message and enforced via response
     post-processing. Previously sent as an assistant-turn prefill, but
-    that combination with the `web_search` server tool is rejected by
-    Anthropic — see the ``_SERVER_TOOL_PREFIXES`` comment + the
-    ``_validate_request_payload`` chokepoint.
+    that combination with the ``web_search`` server tool is rejected
+    by Anthropic — the producer-side guard now lives in
+    ``alpha_engine_lib.anthropic_payload.validate_payload`` (lib
+    v0.38.1+, ROADMAP L242). ``build_messages_payload`` runs the
+    validator at construction time so any future regression that
+    re-introduces the prefill+server-tool combo fails loud at PR time.
     """
     if weekend:
         return "Welcome to Morning Signal, weekend edition."
     if edition == "pm":
         return "Welcome to Morning Signal, evening edition."
     return "Welcome to Morning Signal."
-
-
-def _validate_request_payload(messages: list, tools: list) -> None:
-    """Fail loud at the producer when payload combines server tools with
-    a trailing assistant message — Anthropic returns HTTP 400 for that
-    combination, and a 400 at 5 AM is harder to debug than a ValueError
-    at PR time.
-
-    Lift-to-lib target: this invariant belongs in
-    ``alpha_engine_lib.anthropic_payload`` (ROADMAP); this local
-    validator is the producer-side chokepoint until the lib module
-    ships.
-    """
-    has_server_tool = any(
-        any(t.get("type", "").startswith(p) for p in _SERVER_TOOL_PREFIXES)
-        for t in tools
-    )
-    last_role = messages[-1]["role"] if messages else None
-    if has_server_tool and last_role == "assistant":
-        raise ValueError(
-            "Anthropic payload invariant violated: server-side tools "
-            "(web_search / computer_use / bash / text_editor) cannot be "
-            "combined with a trailing assistant message (prefill). The "
-            "API rejects this with HTTP 400. Either drop the prefill or "
-            "drop the server tool."
-        )
 
 
 def generate_script(config: dict, date_str: str, edition: str) -> str:
@@ -111,42 +77,30 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     log.info(f"Generating {edition_label} script for {friendly_date}...")
 
     tools = [
-        {
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": config.get("web_search_max_uses", 20),
-        }
+        build_web_search_tool(max_uses=config.get("web_search_max_uses", 20))
     ]
-    messages = [
-        {
-            "role": "user",
-            "content": (
-                f"Today is {friendly_date}. This is the {edition_label} edition "
-                f"of Morning Signal. Generate today's {edition_label.lower()} episode "
-                f"per the system prompt, respecting the News Window for this "
-                f"edition (only news/events since the prior edition).\n\n"
-                f"Your response MUST begin verbatim with this exact line, "
-                f"with no preamble or acknowledgement before it:\n\n"
-                f"{opener}"
-            ),
-        },
-    ]
+    user_content = (
+        f"Today is {friendly_date}. This is the {edition_label} edition "
+        f"of Morning Signal. Generate today's {edition_label.lower()} episode "
+        f"per the system prompt, respecting the News Window for this "
+        f"edition (only news/events since the prior edition).\n\n"
+        f"Your response MUST begin verbatim with this exact line, "
+        f"with no preamble or acknowledgement before it:\n\n"
+        f"{opener}"
+    )
 
-    _validate_request_payload(messages, tools)
-
-    response = client.messages.create(
+    # build_messages_payload runs validate_payload internally — the
+    # server-tool ⊥ assistant-prefill invariant is enforced at lib level.
+    payload = build_messages_payload(
         model=config.get("claude_model", "claude-sonnet-4-6"),
+        system_prompt=prompt_text,
+        user_content=user_content,
         max_tokens=config.get("max_tokens", 4096),
         tools=tools,
-        system=[
-            {
-                "type": "text",
-                "text": prompt_text,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=messages,
+        cache_system=True,
     )
+
+    response = client.messages.create(**payload)
 
     record_call_cost(
         msg=response,
