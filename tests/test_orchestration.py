@@ -281,48 +281,95 @@ def test_opening_line_variants(fresh_ge_module):
     )
 
 
-# ── _validate_request_payload (server-tool ⊥ prefill chokepoint) ─────────────
+# ── lib anthropic_payload chokepoint (server-tool ⊥ prefill invariant) ───────
+#
+# Pre-2026-05-27 the producer-side validator lived as a local
+# ``_validate_request_payload`` in morning_signal/claude.py (shipped in
+# PR #34). The 2026-05-27 L242 lift consolidated it into
+# ``alpha_engine_lib.anthropic_payload.validate_payload`` (lib v0.38.1+);
+# the local validator was deleted in the same PR. These tests now drive
+# the lib chokepoint directly — the contract is identical (server tool
+# + trailing assistant prefill → raise), so the invariant assertions
+# are unchanged in spirit; only the import path and the raised
+# exception type differ (PayloadInvariantError, a ValueError subclass,
+# so existing ``pytest.raises(ValueError, ...)`` still matches).
 
 
-def test_validate_request_payload_rejects_server_tool_plus_assistant_prefill(fresh_ge_module):
+def test_lib_validator_rejects_server_tool_plus_assistant_prefill():
     """The producer-side guard that catches the 2026-05-26 regression
     class: web_search (or any server tool) combined with a trailing
     assistant prefill returns HTTP 400 from Anthropic. The validator
     raises ValueError at construction time so the failure surfaces at
     PR time, not at 5 AM in production.
     """
-    messages = [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "Welcome"},
-    ]
-    tools = [{"type": "web_search_20250305", "name": "web_search"}]
-    with pytest.raises(ValueError, match="server-side tools"):
-        fresh_ge_module._validate_request_payload(messages, tools)
-
-
-def test_validate_request_payload_allows_server_tool_without_prefill(fresh_ge_module):
-    fresh_ge_module._validate_request_payload(
-        [{"role": "user", "content": "hi"}],
-        [{"type": "web_search_20250305", "name": "web_search"}],
+    from alpha_engine_lib.anthropic_payload import (
+        PayloadInvariantError,
+        validate_payload,
     )
 
+    payload = {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 1,
+        "system": [{"type": "text", "text": "system"}],
+        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "Welcome"},
+        ],
+    }
+    with pytest.raises(PayloadInvariantError):
+        validate_payload(payload)
 
-def test_validate_request_payload_allows_prefill_without_server_tool(fresh_ge_module):
-    fresh_ge_module._validate_request_payload(
-        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "y"}],
-        [],
-    )
+
+def test_lib_validator_allows_server_tool_without_prefill():
+    from alpha_engine_lib.anthropic_payload import validate_payload
+
+    payload = {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 1,
+        "system": [{"type": "text", "text": "system"}],
+        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    validate_payload(payload)  # must not raise
 
 
-def test_validate_request_payload_rejects_computer_use_plus_prefill(fresh_ge_module):
+def test_lib_validator_allows_prefill_without_server_tool():
+    from alpha_engine_lib.anthropic_payload import validate_payload
+
+    payload = {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 1,
+        "system": [{"type": "text", "text": "system"}],
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "y"},
+        ],
+    }
+    validate_payload(payload)  # must not raise
+
+
+def test_lib_validator_rejects_computer_use_plus_prefill():
     """Same invariant generalizes across all server-side tool prefixes
     (web_search_*, computer_use_*, bash_*, text_editor_*) — assert one
     of the others to defend against per-prefix regression."""
-    with pytest.raises(ValueError, match="server-side tools"):
-        fresh_ge_module._validate_request_payload(
-            [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "y"}],
-            [{"type": "computer_use_20250124", "name": "computer"}],
-        )
+    from alpha_engine_lib.anthropic_payload import (
+        PayloadInvariantError,
+        validate_payload,
+    )
+
+    payload = {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 1,
+        "system": [{"type": "text", "text": "system"}],
+        "tools": [{"type": "computer_use_20250124", "name": "computer"}],
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "y"},
+        ],
+    }
+    with pytest.raises(PayloadInvariantError):
+        validate_payload(payload)
 
 
 # ── post-process opener enforcement ──────────────────────────────────────────

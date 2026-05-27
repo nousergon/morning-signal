@@ -43,7 +43,13 @@ dependencies = [
     # bumps add ``pipeline_status``, ``ssm_dispatcher``, and RAG
     # cleanup — none of which morning-signal consumes; ``cost`` and
     # ``trading_calendar`` surfaces are byte-identical across the range.
-    "alpha-engine-lib>=0.36,<0.37",
+    # 0.37 ships ``anthropic_payload`` (server-tool ⊥ prefill validator
+    # + ``build_messages_payload`` + ``build_web_search_tool`` lift);
+    # 0.38.1 is the first PyPI-published patch with that surface (0.38.0
+    # auto-tag fired but PyPI upload failed on a too-long description —
+    # see alpha-engine-lib #80). Consumed by ``src/morning_signal/claude.py``
+    # + ``tests/live_api_smoke.py`` for the L242 chokepoint swap.
+    "alpha-engine-lib>=0.38.1,<0.39",
 ]
 
 [project.optional-dependencies]

@@ -72,7 +72,7 @@ def _default_edition() -> str:
 # ``__all__`` so static analyzers (CodeQL's py/unused-import, etc.)
 # treat them as intentional re-exports rather than dead imports.
 from morning_signal.aws import _aws_client, _load_runner_session, _maybe_load_from_ssm  # noqa: E402,F401
-from morning_signal.claude import EDITION_LABELS, _validate_request_payload, generate_script, is_non_trading_day, opening_line  # noqa: E402,F401
+from morning_signal.claude import EDITION_LABELS, generate_script, is_non_trading_day, opening_line  # noqa: E402,F401
 from morning_signal.config import load_config, load_prompt  # noqa: E402,F401
 from morning_signal.notify import make_doctor, notify_success  # noqa: E402,F401
 from morning_signal.publish import publish_to_s3  # noqa: E402,F401
@@ -90,7 +90,6 @@ __all__ = [
     "_load_runner_session",
     "_make_progress",
     "_maybe_load_from_ssm",
-    "_validate_request_payload",
     "generate_script",
     "is_non_trading_day",
     "load_config",
