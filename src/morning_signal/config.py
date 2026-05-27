@@ -22,6 +22,7 @@ log = logging.getLogger("morning-signal")
 BASE_DIR = Path.cwd()
 PROMPT_FILE = BASE_DIR / "prompt.md"
 PROMPT_WEEKEND_FILE = BASE_DIR / "prompt_weekend.md"
+PROMPT_PUBLIC_FILE = BASE_DIR / "prompt_public.md"
 CONFIG_FILE = BASE_DIR / "config.yaml"
 EPISODES_DIR = BASE_DIR / "episodes"
 SCRIPTS_DIR = BASE_DIR / "scripts"
@@ -35,8 +36,22 @@ def load_config() -> dict:
     return yaml.safe_load(CONFIG_FILE.read_text())
 
 
-def load_prompt(weekend: bool = False) -> str:
-    path = PROMPT_WEEKEND_FILE if weekend else PROMPT_FILE
+def load_prompt(weekend: bool = False, public_mode: bool = False) -> str:
+    """Load the appropriate prompt for this edition.
+
+    ``public_mode`` (driven by ``config.public_topics_mode``) overrides
+    ``weekend``: ``prompt_public.md`` is the 10-topic catalog used for
+    the public-app soak and handles its own MORNING / EVENING / WEEKEND
+    openers + news-windows internally. When false, behavior matches the
+    pre-soak path (weekday → ``prompt.md``, weekend/holiday →
+    ``prompt_weekend.md``).
+    """
+    if public_mode:
+        path = PROMPT_PUBLIC_FILE
+    elif weekend:
+        path = PROMPT_WEEKEND_FILE
+    else:
+        path = PROMPT_FILE
     if not path.exists():
         log.error(f"Prompt not found: {path}")
         sys.exit(1)

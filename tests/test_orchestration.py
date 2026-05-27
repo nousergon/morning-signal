@@ -259,6 +259,80 @@ def test_generate_script_web_search_max_uses_is_configurable(fresh_ge_module, tm
     assert tool["max_uses"] == 5
 
 
+def test_generate_script_public_topics_mode_injects_active_topics(
+    fresh_ge_module, tmp_path,
+):
+    """When ``public_topics_mode: true``, generate_script must:
+
+    1. Load ``prompt_public.md`` (not ``prompt.md``).
+    2. Compute the 5 active topics (3 fixed + 2 rotating wildcards) from
+       (date, edition) and inject them into the dynamic user message
+       with the "cover only these" instruction.
+
+    Locks down the soak-time wiring: a regression that loads the wrong
+    prompt or silently drops the topics list would otherwise pass CI
+    (the smoke tests only run live API against the canonical prompt).
+    """
+    public_path = tmp_path / "p_public.md"
+    public_path.write_text("# public catalog with all 10 topics inline")
+
+    anth_mock, client = _make_anthropic_mock("script body")
+    with patch.dict(sys.modules, {"anthropic": anth_mock}), \
+         patch.object(_config, "PROMPT_PUBLIC_FILE", public_path):
+        fresh_ge_module.generate_script(
+            {
+                "claude_model": "claude-haiku-4-5",
+                "max_tokens": 100,
+                "web_search_max_uses": 5,
+                "public_topics_mode": True,
+            },
+            "2026-05-28",  # epoch date = idx 0 (AM) → (World, Music)
+            "am",
+        )
+
+    _, kwargs = client.messages.create.call_args
+    # System prompt is the public catalog, not the personal one.
+    system_block = kwargs["system"]
+    assert "public catalog with all 10 topics" in system_block[0]["text"]
+    # User message carries the active-topics directive with the 5
+    # topics for AM 2026-05-28 (idx 0).
+    user_content = kwargs["messages"][0]["content"]
+    assert "Active topics for this edition" in user_content
+    for topic in [
+        "Markets & Economy", "Politics", "Technology",  # fixed
+        "World", "Music",                                 # idx 0 wildcards
+    ]:
+        assert topic in user_content, f"missing topic {topic!r}"
+    # cover-only instruction must reach the model
+    assert "cover only these" in user_content
+
+
+def test_generate_script_public_mode_disabled_loads_personal_prompt(
+    fresh_ge_module, tmp_path,
+):
+    """When the flag is absent or false, the public-topics path is
+    fully bypassed: personal prompt loads, no topics line in user msg."""
+    personal_path = tmp_path / "p.md"
+    personal_path.write_text("# personal prompt body")
+    public_path = tmp_path / "p_public.md"
+    public_path.write_text("# public catalog")
+
+    anth_mock, client = _make_anthropic_mock("script body")
+    with patch.dict(sys.modules, {"anthropic": anth_mock}), \
+         patch.object(_config, "PROMPT_FILE", personal_path), \
+         patch.object(_config, "PROMPT_PUBLIC_FILE", public_path):
+        fresh_ge_module.generate_script(
+            {"claude_model": "x", "max_tokens": 1},  # no public_topics_mode key
+            "2026-05-28", "am",
+        )
+
+    _, kwargs = client.messages.create.call_args
+    assert "personal prompt body" in kwargs["system"][0]["text"]
+    assert "public catalog" not in kwargs["system"][0]["text"]
+    user_content = kwargs["messages"][0]["content"]
+    assert "Active topics" not in user_content
+
+
 def test_is_non_trading_day_weekend_and_holiday(fresh_ge_module):
     # Saturday + Sunday
     assert fresh_ge_module.is_non_trading_day("2026-05-16") is True
