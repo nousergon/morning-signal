@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Per-search `web_search` telemetry (`search_telemetry.py`)** — sibling to `cost_telemetry.py`. Extracts each `server_tool_use` block (the query Claude issued) plus its matching `web_search_tool_result` block (the URLs Anthropic returned), pairing them by `tool_use_id`. Writes one JSONL line per search to `episodes/{date}-{edition}.searches.jsonl`. Called from `claude.generate_script` right after `record_call_cost`. The cost telemetry already captured the *count* of `web_search` requests via `Message.usage.server_tool_use.web_search_requests`; this complements it with the *content* of each search so high-frequency queries and frequently-cited domains can be identified and migrated to curated RSS / direct `web_fetch` sources. Motivation: the 2026-05-27 cost trace showed per-edition Anthropic cost at ~$0.47–$0.66 (vs the stale ROADMAP "~$4.20/mo" estimate), with 58% of that cost going to `cache_create` tokens that originate as `web_search` result content. Reducing search volume — not tightening the cache — is the dominant cost lever, and that requires knowing *what* the model searches.
+- **`analyze_searches.py`** repo-root analyzer. Reads every `episodes/*.searches.jsonl` and prints two tables: top-N normalized queries (lowercased, punctuation-stripped — surfaces patterns Claude re-asks across editions) and top-N cited domains (host extracted from result URLs — surfaces direct-fetch candidates). `--episodes-dir` and `--top` flags. Run after a few days of telemetry to pick the first RSS feeds / `web_fetch` substitutions to ship.
+
 ## [0.1.1rc10] — 2026-05-25
 
 ### Changed
