@@ -11,7 +11,13 @@ prompt_weekend.md
 
 # Generated content
 episodes/
-scripts/
+# scripts/ holds generated episode scripts BUT also carries operational
+# Python artifacts (e.g. scripts/canary.py — ROADMAP L380 Phase A
+# canary).  Pattern-match excludes the .md files git would otherwise
+# pick up while letting committed .py files (and any future operational
+# subdirs) stay tracked. Note: cannot use `scripts/` with `!scripts/X`
+# exception — git won't recurse into a directory-excluded path.
+scripts/*.md
 feed.xml
 artwork.jpg
 cron.log
