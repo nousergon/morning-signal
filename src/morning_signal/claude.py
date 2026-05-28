@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from datetime import datetime
 
@@ -137,6 +138,8 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
         log.error("Claude returned no text content.")
         sys.exit(1)
 
+    script = _scrub_preamble(script, opener)
+
     if not script.startswith(opener):
         log.warning(
             f"Response did not begin with canonical opener; prepending. "
@@ -147,3 +150,61 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     word_count = len(script.split())
     log.info(f"Script: {len(script)} chars, ~{word_count} words (~{word_count / 150:.0f} min spoken)")
     return script
+
+
+_META_PREAMBLE_LINE_PATTERNS = [
+    re.compile(r"^\s*(I'll|I will|Let me|Let's|I'm going to|I am going to|I have|I've|Now let me|First,?\s+let me)\b", re.IGNORECASE),
+    re.compile(r"^\s*(Great|Sure|Okay|OK|Alright|Got it|Perfect)[,.!]?\s+", re.IGNORECASE),
+    re.compile(r"^\s*Here(\s+is|'s)\s+(your|the|today's)\s+(edition|briefing|episode|update)", re.IGNORECASE),
+    re.compile(r"\b(gather|search\s+for|research|compile|look\s+up|fetch)\b.{0,40}\b(fresh|latest|current|information|news|data|info|updates?)\b", re.IGNORECASE),
+    re.compile(r"\bnow\s+have\s+enough\s+(info|information|data|context)\b", re.IGNORECASE),
+]
+
+
+def _scrub_preamble(script: str, opener: str) -> str:
+    """Strip leading meta-narration before the canonical opener.
+
+    Belt-and-suspenders for cases where the model emits lines like
+    "I'll gather fresh info on..." or "Let me search for..." before
+    launching into the podcast. The prompt forbids these but can't
+    strictly enforce from the model side — strip post-hoc so the TTS
+    never sees them.
+
+    Strategy: if the canonical opener appears within the first 800
+    chars, drop everything before it; otherwise drop leading paragraphs
+    whose first non-blank line matches a known meta-preamble pattern.
+    """
+    if not script:
+        return script
+
+    head_window = script[:800]
+    idx = head_window.find(opener)
+    if idx > 0:
+        log.warning(
+            f"Scrubbing {idx} chars of preamble before opener: "
+            f"{script[:idx][:160]!r}"
+        )
+        return script[idx:].lstrip()
+
+    paragraphs = script.split("\n\n")
+    while paragraphs:
+        first = paragraphs[0].strip()
+        if not first:
+            paragraphs.pop(0)
+            continue
+        first_line = first.split("\n", 1)[0]
+        if any(p.search(first_line) for p in _META_PREAMBLE_LINE_PATTERNS):
+            log.warning(f"Scrubbing meta-preamble paragraph: {first[:160]!r}")
+            paragraphs.pop(0)
+            continue
+        break
+
+    scrubbed = "\n\n".join(paragraphs).strip()
+    if not scrubbed:
+        log.warning(
+            "Scrub would empty script; returning original so the "
+            "opener-prepend fallback can rescue. Original: "
+            f"{script[:160]!r}"
+        )
+        return script
+    return scrubbed

@@ -29,7 +29,7 @@ podcast:
 tts:
   polly_voice: "Ruth"      # Ruth = British female, Matthew = US male, Joanna = US female
   polly_engine: "neural"   # "neural" (best quality) or "standard"
-  speed: 1.5               # Playback speed multiplier; 1.0 = normal, 1.5 = fast brief
+  speed: 1.0               # Playback speed multiplier; 1.0 = normal conversational pace, raise to 1.25–1.5 for fast brief
 
 # ── Generation ──────────────────────────────────────────────────────────────
 claude_model: "claude-sonnet-4-6"  # Use the latest Sonnet for current Claude API
