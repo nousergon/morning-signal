@@ -1,0 +1,237 @@
+"""Operational canary — payload-shape regression gate for morning-signal.
+
+Sibling to ``tests/live_api_smoke.py`` (CI gate at PR time) but designed
+to run on the EC2 host as the systemd ``ExecStartPre=`` for the
+``morning-signal.service`` unit. Catches the long-tail regression class
+that CI's paths-filter cannot see: out-of-band edits to the LIVE
+production prompt + config that bypass the PR flow.
+
+Examples this catches that CI does not:
+  - operator edits ``prompt_public.md`` directly on the host then
+    ``git commit --no-verify`` push that misses CI;
+  - operator edits the SSM ``/morning-signal/config-yaml`` parameter or
+    the S3-hosted prompt object (per
+    ``reference_morning_signal_prompts_via_s3_260527``) without a PR;
+  - lib-pin bumps via ``pip install`` overrides on the host that don't
+    update ``pyproject.toml``.
+
+Behavior: loads the EXACT production config + prompts the next
+``generate_script`` call would use (via the same
+``_maybe_load_from_ssm`` bootstrap), builds the EXACT same payload
+shape with ``max_tokens=1``, dispatches a single
+``messages.create()`` call (~$0.001), and exits 0/1.
+
+Exit codes:
+  0 — payload validated by ``alpha_engine_lib.anthropic_payload`` AND
+      accepted by the Anthropic API at runtime.
+  1 — validation failure, HTTP 4xx (the canonical regression class),
+      missing API key, or any unexpected error.
+
+ROADMAP L380 / GATE_REGISTRY ``L380-dashboard-canary-defense-in-depth``.
+This is Phase A — the script itself. Phase B (``ExecStartPre=`` wiring
+into ``morning-signal.service`` + EC2 deploy) is gated on the
+public-topics 7-day soak terminating (~2026-06-03) so a spurious
+canary failure cannot contaminate soak data.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import logging
+import os
+import sys
+from pathlib import Path
+
+# Make ``morning_signal`` importable when the script is run directly via
+# ``python scripts/canary.py`` from the repo root (or via
+# ``.venv/bin/python scripts/canary.py`` from the systemd unit).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from alpha_engine_lib.anthropic_payload import (  # noqa: E402
+    build_messages_payload,
+    build_web_search_tool,
+)
+from morning_signal import config as _config  # noqa: E402
+from morning_signal.aws import _maybe_load_from_ssm  # noqa: E402
+from morning_signal.claude import (  # noqa: E402
+    EDITION_LABELS,
+    is_non_trading_day,
+    opening_line,
+)
+from morning_signal.config import load_config, load_prompt  # noqa: E402
+from morning_signal.topic_rotation import active_topics_for_edition  # noqa: E402
+
+log = logging.getLogger("morning-signal.canary")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+
+def _build_canary_payload(
+    config: dict,
+    date_str: str,
+    edition: str,
+) -> dict:
+    """Construct the SAME payload shape ``generate_script`` builds,
+    differing only in ``max_tokens=1``.
+
+    Mirrors ``morning_signal.claude.generate_script`` so any payload-
+    shape regression there is caught here. ``build_messages_payload``
+    runs ``validate_payload`` internally; the server-tool ⊥
+    assistant-prefill invariant + the cache-control + tool-call shape
+    are enforced at lib level identically.
+    """
+    weekend = is_non_trading_day(date_str)
+    public_mode = bool(config.get("public_topics_mode", False))
+    prompt_text = load_prompt(weekend=weekend, public_mode=public_mode)
+
+    dt = _dt.datetime.strptime(date_str, "%Y-%m-%d")
+    friendly_date = dt.strftime("%A, %B %-d, %Y")
+    edition_label = "WEEKEND" if weekend else EDITION_LABELS[edition]
+    opener = opening_line(edition, weekend)
+
+    tools = [
+        build_web_search_tool(max_uses=config.get("web_search_max_uses", 20))
+    ]
+
+    if public_mode:
+        topics = active_topics_for_edition(date_str, edition)
+        topics_line = (
+            f" Active topics for this edition (cover only these, in this "
+            f"order, ~400 words each): {', '.join(topics)}."
+        )
+    else:
+        topics_line = ""
+
+    user_content = (
+        f"Today is {friendly_date}. This is the {edition_label} edition "
+        f"of Morning Signal.{topics_line} Generate today's "
+        f"{edition_label.lower()} episode per the system prompt, respecting "
+        f"the News Window for this edition (only news/events since the "
+        f"prior edition).\n\n"
+        f"Your response MUST begin verbatim with this exact line, "
+        f"with no preamble or acknowledgement before it:\n\n"
+        f"{opener}"
+    )
+
+    return build_messages_payload(
+        model=config.get("claude_model", "claude-sonnet-4-6"),
+        system_prompt=prompt_text,
+        user_content=user_content,
+        max_tokens=1,
+        tools=tools,
+        cache_system=True,
+    )
+
+
+def main() -> int:
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        log.error(
+            "canary: ANTHROPIC_API_KEY not set. Production runs route via "
+            "SSM bootstrap; this likely means SSM fetch failed or the env "
+            "var was stripped from the systemd unit."
+        )
+        return 1
+
+    try:
+        _maybe_load_from_ssm()
+    except Exception as exc:
+        log.error(
+            "canary: SSM bootstrap failed (%s: %s). The production "
+            "service would fail the same way; refusing to release the "
+            "service to ExecStart.",
+            type(exc).__name__,
+            exc,
+        )
+        return 1
+
+    try:
+        cfg = load_config()
+    except SystemExit:
+        log.error("canary: load_config() exited; config.yaml missing or "
+                  "unreadable. See preceding log line for path.")
+        return 1
+    except Exception as exc:
+        log.error(
+            "canary: load_config() raised (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
+        return 1
+
+    today = _dt.date.today().isoformat()
+    edition = os.environ.get("MORNING_SIGNAL_CANARY_EDITION", "am")
+    if edition not in EDITION_LABELS:
+        log.error(
+            "canary: MORNING_SIGNAL_CANARY_EDITION=%r is not one of %s",
+            edition,
+            sorted(EDITION_LABELS),
+        )
+        return 1
+
+    try:
+        payload = _build_canary_payload(cfg, today, edition)
+    except Exception as exc:
+        log.error(
+            "canary: payload construction failed (%s: %s) — "
+            "validate_payload caught a server-tool ⊥ assistant-prefill "
+            "or similar shape regression at LIB level. DO NOT START.",
+            type(exc).__name__,
+            exc,
+        )
+        return 1
+
+    try:
+        import anthropic
+    except ImportError:
+        log.error("canary: anthropic SDK not installed in .venv")
+        return 1
+
+    client = anthropic.Anthropic(max_retries=0, api_key=api_key)
+    model = payload.get("model")
+
+    log.info(
+        "canary: dispatching max_tokens=1 smoke to %s (edition=%s, "
+        "public_mode=%s, config=%s)",
+        model,
+        edition,
+        bool(cfg.get("public_topics_mode", False)),
+        _config.CONFIG_FILE,
+    )
+
+    try:
+        resp = client.messages.create(**payload)
+    except anthropic.BadRequestError as exc:
+        log.error(
+            "canary: FAILED — Anthropic returned HTTP 400.\n"
+            "  Error: %s\n"
+            "  This is the exact regression class the canary is meant "
+            "to catch (see ROADMAP L380; the 2026-05-26 server-tool ⊥ "
+            "assistant-prefill incident). DO NOT START the service.",
+            exc,
+        )
+        return 1
+    except anthropic.APIStatusError as exc:
+        log.error("canary: API returned %s: %s", exc.status_code, exc)
+        return 1
+    except Exception as exc:
+        log.error(
+            "canary: unexpected error (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
+        return 1
+
+    log.info(
+        "canary: OK — stop_reason=%s input_tokens=%s output_tokens=%s",
+        resp.stop_reason,
+        resp.usage.input_tokens,
+        resp.usage.output_tokens,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
