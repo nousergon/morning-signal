@@ -192,6 +192,22 @@ def _maybe_load_from_ssm() -> None:
         if chat_id:
             os.environ["FLOW_DOCTOR_TELEGRAM_CHAT_ID"] = chat_id
 
+    # GCP service-account key for the Chirp3 HD TTS engine (tts.engine: google).
+    # Optional — Polly installs stay key-less. The Google SDK reads
+    # GOOGLE_APPLICATION_CREDENTIALS as a FILE PATH (not inline JSON), so
+    # materialize the SecureString to a 0600 file in the tmpdir. Local env-var
+    # override wins (one-off local runs point at ~/.config/gcloud/...). If the
+    # engine is google but this param is absent, the google client fails loud
+    # at synth time — the right surface, not a silent Polly fallback.
+    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        gcp_key = fetch_optional("/morning-signal/gcp-tts-key")
+        if gcp_key:
+            gcp_path = tmpdir / "gcp-tts-key.json"
+            gcp_path.write_text(gcp_key)
+            gcp_path.chmod(0o600)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcp_path)
+            log.info("SSM: GCP TTS key materialized for Chirp3 HD engine")
+
     log.info(
         f"SSM: loaded config + prompt + Anthropic key "
         f"({'+ Telegram creds ' if os.environ.get('FLOW_DOCTOR_TELEGRAM_BOT_TOKEN') else ''}"
