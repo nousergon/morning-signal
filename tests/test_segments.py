@@ -130,6 +130,39 @@ def test_generate_segments_word_target_propagates_to_prompt(monkeypatch, seg_con
     assert "~250 words" in user_content
 
 
+def test_per_segment_char_budget_splits_episode_max():
+    # 6 segments, 9000 max → (9000-200)//6
+    assert claude._per_segment_char_budget({"episode_max_chars": 9000}, 6) == (9000 - 200) // 6
+    # floor at 800 when topic count is large
+    assert claude._per_segment_char_budget({"episode_max_chars": 9000}, 100) == 800
+
+
+def test_generate_segments_caps_each_segment_to_per_segment_budget(monkeypatch, seg_config):
+    """Each catalog segment is truncated to its char slot — the hard ceiling
+    that guarantees the episode max even when the model overruns."""
+    long = "This is a sentence. " * 500  # ~10K chars, far over any slot
+    _patch_common(monkeypatch, text=long)
+    seg_config["episode_max_chars"] = 6000  # 5 catalog topics, no freeform
+    segs = claude.generate_segments(seg_config, "2026-05-28", "am")
+    per_seg = (6000 - 200) // 5
+    assert segs and all(len(t) <= per_seg for _, t in segs)
+
+
+def test_episode_total_stays_under_max(monkeypatch, seg_config):
+    """intro + all capped segments must sum under episode_max_chars."""
+    long = "This is a sentence. " * 500
+    _patch_common(monkeypatch, text=long)
+    seg_config["episode_max_chars"] = 6000
+    seg_config["freeform_topic"] = "Extra"
+    segs = claude.generate_segments(seg_config, "2026-05-28", "am")
+    ff = claude.generate_freeform_segment(seg_config, "2026-05-28", "am")
+    if ff:
+        segs.append(ff)
+    intro_reserve = 200
+    total = intro_reserve + sum(len(t) for _, t in segs)
+    assert total <= seg_config["episode_max_chars"]
+
+
 def test_scrub_segment_drops_leading_meta_preamble():
     text = "Let me search for the latest on this.\n\nThe real segment copy starts here."
     out = claude._scrub_segment(text)
