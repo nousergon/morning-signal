@@ -27,7 +27,7 @@ jobs:
       - name: Install package + dev deps
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[dev]
+          pip install -e .[dev,google]
 
       - name: Run pytest with coverage
         run: pytest
