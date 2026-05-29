@@ -170,6 +170,52 @@ def test_maybe_load_from_ssm_fetches_and_overrides_paths(
 
 
 @mock_aws
+def test_maybe_load_from_ssm_materializes_gcp_key(fresh_ge_module, aws_env, monkeypatch):
+    """The optional GCP TTS key (SSM SecureString) is written to a tmpdir file
+    and GOOGLE_APPLICATION_CREDENTIALS points at it (the SDK wants a path)."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    key_json = '{"type": "service_account", "project_id": "morning-signal"}'
+    _seed_ssm_and_s3(extra_ssm_params={"/morning-signal/gcp-tts-key": key_json})
+
+    fresh_ge_module._maybe_load_from_ssm()
+
+    path = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+    assert "morning-signal-" in path
+    assert Path(path).read_text() == key_json
+
+
+@mock_aws
+def test_maybe_load_from_ssm_no_gcp_key_leaves_env_unset(fresh_ge_module, aws_env, monkeypatch):
+    """Polly installs (no gcp-tts-key param) must not set the env var or crash."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    _seed_ssm_and_s3()  # no gcp key seeded
+
+    fresh_ge_module._maybe_load_from_ssm()
+
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ
+
+
+@mock_aws
+def test_maybe_load_from_ssm_local_gcp_override_wins(fresh_ge_module, aws_env, monkeypatch):
+    """A pre-set GOOGLE_APPLICATION_CREDENTIALS (local run) is not overwritten."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/local/key.json")
+    _seed_ssm_and_s3(extra_ssm_params={"/morning-signal/gcp-tts-key": '{"x": 1}'})
+
+    fresh_ge_module._maybe_load_from_ssm()
+
+    assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == "/local/key.json"
+
+
+@mock_aws
 def test_maybe_load_from_ssm_fails_loudly_when_s3_bucket_missing_from_config(
     fresh_ge_module, aws_env, monkeypatch
 ):
