@@ -152,6 +152,93 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     return script
 
 
+def generate_segments(config: dict, date_str: str, edition: str) -> list[tuple[str, str]]:
+    """Generate one independent ~400-word segment per active topic.
+
+    This is the catalog-stitch generation path (Phase A step 2). Unlike
+    ``generate_script`` (one combined call covering all topics), each topic
+    gets its own Claude call so segments are independently producible — the
+    precondition for the multi-tenant product caching a topic once and reusing
+    it across every user who selects it.
+
+    Requires ``public_topics_mode`` (segments are a public-catalog concept).
+    Returns ``[(topic, segment_text), ...]`` in edition order. Per-topic search
+    budget is capped by ``segment_search_max_uses`` (default 5) so fan-out
+    can't blow the server-tool fee.
+    """
+    import anthropic
+
+    if not config.get("public_topics_mode", False):
+        raise ValueError("generate_segments requires public_topics_mode=true")
+
+    client = anthropic.Anthropic(max_retries=5)
+    weekend = is_non_trading_day(date_str)
+    prompt_text = load_prompt(weekend=weekend, public_mode=True)
+
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    friendly_date = dt.strftime("%A, %B %-d, %Y")
+    edition_label = "WEEKEND" if weekend else EDITION_LABELS[edition]
+    topics = active_topics_for_edition(date_str, edition)
+    max_uses = config.get("segment_search_max_uses", 5)
+
+    log.info(f"Segmented generation: {len(topics)} topics — {', '.join(topics)}")
+
+    segments: list[tuple[str, str]] = []
+    for topic in topics:
+        user_content = (
+            f"Today is {friendly_date}. This is the {edition_label} edition of "
+            f"Morning Signal. Cover ONLY the single topic \"{topic}\" in ~400 "
+            f"words, per the system prompt's treatment of that topic, respecting "
+            f"the News Window for this edition (only news/events since the prior "
+            f"edition). Do NOT cover any other topic. Do NOT add an opening "
+            f"greeting, sign-off, or any meta-narration about searching — output "
+            f"only the spoken segment copy for \"{topic}\"."
+        )
+        payload = build_messages_payload(
+            model=config.get("claude_model", "claude-sonnet-4-6"),
+            system_prompt=prompt_text,
+            user_content=user_content,
+            max_tokens=config.get("max_tokens", 4096),
+            tools=[build_web_search_tool(max_uses=max_uses)],
+            cache_system=True,
+        )
+        response = client.messages.create(**payload)
+        record_call_cost(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
+        record_searches(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
+
+        text = "\n\n".join(b.text for b in response.content if b.type == "text").strip()
+        if not text:
+            log.error(f"Claude returned no text for segment topic {topic!r}.")
+            sys.exit(1)
+        text = _scrub_segment(text)
+        log.info(f"  Segment {topic!r}: {len(text)} chars, ~{len(text.split())} words")
+        segments.append((topic, text))
+
+    return segments
+
+
+def _scrub_segment(text: str) -> str:
+    """Drop leading meta-preamble paragraphs from a topic segment.
+
+    Segments have no canonical opener, so this reuses only the paragraph-level
+    meta-narration scrub from ``_scrub_preamble`` (e.g. 'Let me search for...').
+    """
+    paragraphs = text.split("\n\n")
+    while paragraphs:
+        first = paragraphs[0].strip()
+        if not first:
+            paragraphs.pop(0)
+            continue
+        first_line = first.split("\n", 1)[0]
+        if any(p.search(first_line) for p in _META_PREAMBLE_LINE_PATTERNS):
+            log.warning(f"Scrubbing segment meta-preamble: {first[:160]!r}")
+            paragraphs.pop(0)
+            continue
+        break
+    scrubbed = "\n\n".join(paragraphs).strip()
+    return scrubbed or text  # never empty out the segment
+
+
 _META_PREAMBLE_LINE_PATTERNS = [
     re.compile(r"^\s*(I'll|I will|Let me|Let's|I'm going to|I am going to|I have|I've|Now let me|First,?\s+let me)\b", re.IGNORECASE),
     re.compile(r"^\s*(Great|Sure|Okay|OK|Alright|Got it|Perfect)[,.!]?\s+", re.IGNORECASE),
