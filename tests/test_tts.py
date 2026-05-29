@@ -74,6 +74,37 @@ def test_tts_google_chunks_writes_and_uses_config_voice(monkeypatch, tmp_path):
     assert not list(tmp_path.glob("_gchunk_*.mp3"))
 
 
+def test_synthesize_segments_renders_each_and_concats(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_synth(text, out, config):
+        calls.append(text)
+        out.write_bytes(b"MP3:" + text.encode())
+
+    monkeypatch.setattr(tts, "synthesize", fake_synth)
+    out = tmp_path / "ep.mp3"
+    tts.synthesize_segments(["intro", "topic A", "topic B"], out, {"tts": {}})
+
+    assert calls == ["intro", "topic A", "topic B"]
+    assert out.exists()
+    data = out.read_bytes()
+    assert b"intro" in data and b"topic A" in data and b"topic B" in data
+    assert not list(tmp_path.glob("_seg_*.mp3"))  # temps cleaned up
+
+
+def test_synthesize_segments_single_script_renames(monkeypatch, tmp_path):
+    monkeypatch.setattr(tts, "synthesize", lambda t, o, c: o.write_bytes(b"X"))
+    out = tmp_path / "ep.mp3"
+    tts.synthesize_segments(["only one"], out, {"tts": {}})
+    assert out.read_bytes() == b"X"
+    assert not list(tmp_path.glob("_seg_*.mp3"))
+
+
+def test_synthesize_segments_empty_raises(tmp_path):
+    with pytest.raises(ValueError, match="no scripts"):
+        tts.synthesize_segments([], tmp_path / "ep.mp3", {"tts": {}})
+
+
 def test_tts_google_missing_dep_raises_with_install_hint(monkeypatch, tmp_path):
     """If the google extra isn't installed, fail loud with the install hint."""
     import builtins

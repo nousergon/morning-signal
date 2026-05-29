@@ -539,6 +539,46 @@ def test_main_full_pipeline_script_only(
 
 
 @mock_aws
+def test_main_segmented_mode_stitches_per_topic_segments(
+    fresh_ge_module, aws_env, tmp_episodes_dir, tmp_scripts_dir,
+    sample_config, monkeypatch, tmp_path
+):
+    """Segmented public-topics mode: per-topic generation feeds the stitch
+    path, the saved script carries the intro + per-topic sections, and the
+    episode MP3 is assembled from the segments."""
+    cfg_dict = {**sample_config, "public_topics_mode": True, "generation_mode": "segmented"}
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(json.dumps(cfg_dict))
+    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
+
+    monkeypatch.setattr(
+        fresh_ge_module, "generate_segments",
+        lambda config, date, ed: [("Markets & Economy", "Markets copy."), ("Politics", "Politics copy.")],
+    )
+    stitched = {}
+
+    def fake_seg_synth(scripts, out, config):
+        stitched["scripts"] = scripts
+        out.write_bytes(b"AUDIO")
+
+    monkeypatch.setattr(fresh_ge_module, "synthesize_segments", fake_seg_synth)
+    monkeypatch.setattr(fresh_ge_module, "publish_to_s3", lambda *a, **k: None)
+
+    monkeypatch.setattr(sys, "argv", ["generate_episode.py", "--date", "2026-05-14", "--edition", "am"])
+    fresh_ge_module.main()
+
+    saved = (tmp_scripts_dir / "2026-05-14-am.md").read_text()
+    assert "Welcome to Morning Signal." in saved
+    assert "Today: Markets & Economy, Politics." in saved
+    assert "## Markets & Economy" in saved and "## Politics" in saved
+
+    # The stitch received [intro, segment1, segment2] in order.
+    assert stitched["scripts"][0].startswith("Welcome to Morning Signal.")
+    assert stitched["scripts"][1:] == ["Markets copy.", "Politics copy."]
+    assert (tmp_episodes_dir / "2026-05-14-am.mp3").exists()
+
+
+@mock_aws
 def test_main_failure_path_routes_through_flow_doctor_guard(
     fresh_ge_module, aws_env, tmp_episodes_dir, tmp_scripts_dir,
     sample_config, monkeypatch, tmp_path

@@ -58,6 +58,21 @@ web_search_max_uses: 20
 # ``src/morning_signal/topic_rotation.py`` for the rotation invariants.
 public_topics_mode: false
 
+# ── Generation mode (Phase A catalog-stitch, custom-podcast product) ───────
+# "monolithic" (default): one Claude call covers all active topics in a single
+# flowing script — cheapest, current behavior. "segmented": one independent
+# Claude call + TTS render PER topic, stitched into the episode. Segmented is
+# the product-faithful catalog-stitch path (a topic is generated once and, in
+# the multi-tenant product, cached + reused across users). Only takes effect
+# when public_topics_mode is also true. Trade-off: segmented fans out to N
+# calls (one per topic), so per-edition cost is higher than monolithic — that
+# is the product cost being validated, not a regression. See
+# private/custom-podcast-app-business-plan-260529.md §7.
+generation_mode: "monolithic"
+# Per-topic web-search ceiling in segmented mode (each topic call is capped
+# independently). N topics × this = the edition's search-fee ceiling.
+segment_search_max_uses: 5
+
 # Max episodes to keep in the RSS feed (older episodes remain in S3 but
 # drop off the feed to keep it lightweight).
 feed_max_episodes: 90
