@@ -254,12 +254,14 @@ def generate_segments(config: dict, date_str: str, edition: str) -> list[tuple[s
 
     log.info(f"Segmented generation: {len(topics)} topics — {', '.join(topics)}")
 
+    word_target = config.get("segment_word_target", 250)
     segments: list[tuple[str, str]] = []
     for topic in topics:
         text = _generate_topic_segment(
             client=client, config=config, prompt_text=prompt_text,
             friendly_date=friendly_date, edition_label=edition_label, topic=topic,
             max_uses=max_uses, date_str=date_str, edition=edition,
+            word_target=word_target,
         )
         segments.append((topic, text))
 
@@ -293,7 +295,7 @@ def generate_freeform_segment(config: dict, date_str: str, edition: str) -> tupl
         client=client, config=config, prompt_text=prompt_text,
         friendly_date=friendly_date, edition_label=edition_label, topic=topic,
         max_uses=config.get("segment_search_max_uses", 5), date_str=date_str,
-        edition=edition, word_target=300,
+        edition=edition, word_target=config.get("segment_word_target", 250),
         char_budget=config.get("freeform_max_chars", 3200),
     )
     return topic, text
