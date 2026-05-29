@@ -152,6 +152,75 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     return script
 
 
+def enforce_char_budget(text: str, max_chars: int, *, label: str = "segment") -> str:
+    """Cap ``text`` at ``max_chars``, truncating at the last sentence boundary.
+
+    THE FINANCIAL CIRCUIT-BREAKER for the freeform slice: TTS bills per
+    character and an LLM will overshoot a "~3-minute" instruction, so the
+    char budget — not the word instruction — is what bounds worst-case
+    per-user cost (see private/custom-podcast-app-business-plan-260529.md §6).
+
+    Fail-loud: an overage is never silently shipped — it's recorded via a
+    WARN log naming the overage + label. (In the single-user cron the WARN
+    in cron.log is the recording surface; the multi-tenant product owes a
+    named CloudWatch metric + alarm here — Phase B.)
+    """
+    if len(text) <= max_chars:
+        return text
+    window = text[:max_chars]
+    cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
+    truncated = (window[: cut + 1] if cut > 0 else window).rstrip()
+    log.warning(
+        f"CIRCUIT-BREAKER: {label} exceeded char budget "
+        f"({len(text)} > {max_chars}); truncated to {len(truncated)} chars."
+    )
+    return truncated
+
+
+def _generate_topic_segment(
+    *, client, config: dict, prompt_text: str, friendly_date: str,
+    edition_label: str, topic: str, max_uses: int, date_str: str, edition: str,
+    word_target: int = 400, char_budget: int | None = None,
+) -> str:
+    """One independent Claude call producing the spoken copy for a single topic.
+
+    Shared by the catalog loop (``generate_segments``) and the freeform slice
+    (``generate_freeform_segment``). Records cost + search telemetry, scrubs
+    meta-preamble, and — when ``char_budget`` is set — enforces the circuit
+    breaker before returning. Exits on empty output (fail-loud).
+    """
+    user_content = (
+        f"Today is {friendly_date}. This is the {edition_label} edition of "
+        f"Morning Signal. Cover ONLY the single topic \"{topic}\" in ~{word_target} "
+        f"words, per the system prompt's treatment of that topic, respecting "
+        f"the News Window for this edition (only news/events since the prior "
+        f"edition). Do NOT cover any other topic. Do NOT add an opening "
+        f"greeting, sign-off, or any meta-narration about searching — output "
+        f"only the spoken segment copy for \"{topic}\"."
+    )
+    payload = build_messages_payload(
+        model=config.get("claude_model", "claude-sonnet-4-6"),
+        system_prompt=prompt_text,
+        user_content=user_content,
+        max_tokens=config.get("max_tokens", 4096),
+        tools=[build_web_search_tool(max_uses=max_uses)],
+        cache_system=True,
+    )
+    response = client.messages.create(**payload)
+    record_call_cost(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
+    record_searches(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
+
+    text = "\n\n".join(b.text for b in response.content if b.type == "text").strip()
+    if not text:
+        log.error(f"Claude returned no text for segment topic {topic!r}.")
+        sys.exit(1)
+    text = _scrub_segment(text)
+    if char_budget is not None:
+        text = enforce_char_budget(text, char_budget, label=f"freeform:{topic}")
+    log.info(f"  Segment {topic!r}: {len(text)} chars, ~{len(text.split())} words")
+    return text
+
+
 def generate_segments(config: dict, date_str: str, edition: str) -> list[tuple[str, str]]:
     """Generate one independent ~400-word segment per active topic.
 
@@ -185,36 +254,47 @@ def generate_segments(config: dict, date_str: str, edition: str) -> list[tuple[s
 
     segments: list[tuple[str, str]] = []
     for topic in topics:
-        user_content = (
-            f"Today is {friendly_date}. This is the {edition_label} edition of "
-            f"Morning Signal. Cover ONLY the single topic \"{topic}\" in ~400 "
-            f"words, per the system prompt's treatment of that topic, respecting "
-            f"the News Window for this edition (only news/events since the prior "
-            f"edition). Do NOT cover any other topic. Do NOT add an opening "
-            f"greeting, sign-off, or any meta-narration about searching — output "
-            f"only the spoken segment copy for \"{topic}\"."
+        text = _generate_topic_segment(
+            client=client, config=config, prompt_text=prompt_text,
+            friendly_date=friendly_date, edition_label=edition_label, topic=topic,
+            max_uses=max_uses, date_str=date_str, edition=edition,
         )
-        payload = build_messages_payload(
-            model=config.get("claude_model", "claude-sonnet-4-6"),
-            system_prompt=prompt_text,
-            user_content=user_content,
-            max_tokens=config.get("max_tokens", 4096),
-            tools=[build_web_search_tool(max_uses=max_uses)],
-            cache_system=True,
-        )
-        response = client.messages.create(**payload)
-        record_call_cost(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
-        record_searches(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
-
-        text = "\n\n".join(b.text for b in response.content if b.type == "text").strip()
-        if not text:
-            log.error(f"Claude returned no text for segment topic {topic!r}.")
-            sys.exit(1)
-        text = _scrub_segment(text)
-        log.info(f"  Segment {topic!r}: {len(text)} chars, ~{len(text.split())} words")
         segments.append((topic, text))
 
     return segments
+
+
+def generate_freeform_segment(config: dict, date_str: str, edition: str) -> tuple[str, str] | None:
+    """Generate the optional user freeform-topic segment, char-budget-capped.
+
+    Reads ``freeform_topic`` from config; returns ``None`` when unset (no
+    freeform slice this edition). When set, generates one ~300-word segment
+    on that topic and enforces ``freeform_max_chars`` (default 3200 ≈ 3 min)
+    via the circuit breaker — this is the only per-user-controlled surface
+    and thus the one that bounds worst-case cost. Returns ``(topic, text)``.
+    """
+    import anthropic
+
+    topic = (config.get("freeform_topic") or "").strip()
+    if not topic:
+        return None
+
+    client = anthropic.Anthropic(max_retries=5)
+    weekend = is_non_trading_day(date_str)
+    prompt_text = load_prompt(weekend=weekend, public_mode=True)
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    friendly_date = dt.strftime("%A, %B %-d, %Y")
+    edition_label = "WEEKEND" if weekend else EDITION_LABELS[edition]
+
+    log.info(f"Freeform segment requested: {topic!r}")
+    text = _generate_topic_segment(
+        client=client, config=config, prompt_text=prompt_text,
+        friendly_date=friendly_date, edition_label=edition_label, topic=topic,
+        max_uses=config.get("segment_search_max_uses", 5), date_str=date_str,
+        edition=edition, word_target=300,
+        char_budget=config.get("freeform_max_chars", 3200),
+    )
+    return topic, text
 
 
 def _scrub_segment(text: str) -> str:

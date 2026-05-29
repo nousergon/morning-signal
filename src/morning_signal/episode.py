@@ -10,7 +10,7 @@ from pathlib import Path
 
 from morning_signal import aws as _aws
 from morning_signal import config as _config
-from morning_signal.claude import generate_script, generate_segments
+from morning_signal.claude import generate_freeform_segment, generate_script, generate_segments
 from morning_signal.notify import make_doctor, notify_success
 from morning_signal.publish import publish_to_s3
 from morning_signal.tts import synthesize, synthesize_segments
@@ -72,7 +72,7 @@ def _default_edition() -> str:
 # ``__all__`` so static analyzers (CodeQL's py/unused-import, etc.)
 # treat them as intentional re-exports rather than dead imports.
 from morning_signal.aws import _aws_client, _load_runner_session, _maybe_load_from_ssm  # noqa: E402,F401
-from morning_signal.claude import EDITION_LABELS, generate_script, generate_segments, is_non_trading_day, opening_line  # noqa: E402,F401
+from morning_signal.claude import EDITION_LABELS, generate_freeform_segment, generate_script, generate_segments, is_non_trading_day, opening_line  # noqa: E402,F401
 from morning_signal.config import load_config, load_prompt  # noqa: E402,F401
 from morning_signal.notify import make_doctor, notify_success  # noqa: E402,F401
 from morning_signal.publish import publish_to_s3  # noqa: E402,F401
@@ -90,6 +90,7 @@ __all__ = [
     "_load_runner_session",
     "_make_progress",
     "_maybe_load_from_ssm",
+    "generate_freeform_segment",
     "generate_script",
     "generate_segments",
     "is_non_trading_day",
@@ -237,6 +238,11 @@ def main():
                 seg_scripts: list[str] | None = None
                 if segmented:
                     segments = generate_segments(config, args.date, args.edition)
+                    # Optional user freeform topic — char-budget-capped (the
+                    # only per-user-controlled surface). Appended last.
+                    freeform = generate_freeform_segment(config, args.date, args.edition)
+                    if freeform is not None:
+                        segments = segments + [freeform]
                     weekend = is_non_trading_day(args.date)
                     opener = opening_line(args.edition, weekend)
                     topic_names = [t for t, _ in segments]
