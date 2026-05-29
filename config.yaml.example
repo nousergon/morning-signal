@@ -72,6 +72,10 @@ generation_mode: "monolithic"
 # Per-topic web-search ceiling in segmented mode (each topic call is capped
 # independently). N topics × this = the edition's search-fee ceiling.
 segment_search_max_uses: 5
+# Target words per segment (segmented mode). ~250 × (5 topics + freeform) keeps
+# the episode near the ~10-min target. The model honors this loosely, so adjust
+# during the soak if episodes run long/short.
+segment_word_target: 250
 
 # Optional freeform topic (segmented mode only): a single user-chosen topic
 # appended as one extra ~300-word segment. Empty = no freeform slice. In the

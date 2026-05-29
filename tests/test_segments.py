@@ -121,6 +121,15 @@ def test_generate_freeform_segment_enforces_char_budget(monkeypatch, seg_config)
     assert len(text) <= 300
 
 
+def test_generate_segments_word_target_propagates_to_prompt(monkeypatch, seg_config):
+    """segment_word_target drives the per-topic word instruction."""
+    client = _patch_common(monkeypatch)
+    seg_config["segment_word_target"] = 250
+    claude.generate_segments(seg_config, "2026-05-28", "am")
+    user_content = str(client.messages.create.call_args.kwargs.get("messages"))
+    assert "~250 words" in user_content
+
+
 def test_scrub_segment_drops_leading_meta_preamble():
     text = "Let me search for the latest on this.\n\nThe real segment copy starts here."
     out = claude._scrub_segment(text)
