@@ -195,8 +195,10 @@ def _generate_topic_segment(
         f"words, per the system prompt's treatment of that topic, respecting "
         f"the News Window for this edition (only news/events since the prior "
         f"edition). Do NOT cover any other topic. Do NOT add an opening "
-        f"greeting, sign-off, or any meta-narration about searching — output "
-        f"only the spoken segment copy for \"{topic}\"."
+        f"greeting, sign-off, or any meta-narration about searching. NEVER "
+        f"begin with \"Welcome to Morning Signal\" or any episode greeting — "
+        f"this is a mid-episode segment, not the start. Output only the spoken "
+        f"segment copy for \"{topic}\"."
     )
     payload = build_messages_payload(
         model=config.get("claude_model", "claude-sonnet-4-6"),
@@ -298,10 +300,14 @@ def generate_freeform_segment(config: dict, date_str: str, edition: str) -> tupl
 
 
 def _scrub_segment(text: str) -> str:
-    """Drop leading meta-preamble paragraphs from a topic segment.
+    """Clean a topic segment for stitching.
 
-    Segments have no canonical opener, so this reuses only the paragraph-level
-    meta-narration scrub from ``_scrub_preamble`` (e.g. 'Let me search for...').
+    Two passes: (1) drop leading meta-preamble paragraphs (e.g. 'Let me search
+    for...'), reusing the patterns from ``_scrub_preamble``; (2) strip a leaked
+    episode greeting ('Welcome to Morning Signal...'). The system prompt
+    conditions the opener hard, so a per-topic call — especially the freeform
+    slice — sometimes reproduces it; left in, it re-greets mid-episode after
+    the intro already greeted once. The greeting belongs ONLY to the intro.
     """
     paragraphs = text.split("\n\n")
     while paragraphs:
@@ -315,8 +321,19 @@ def _scrub_segment(text: str) -> str:
             paragraphs.pop(0)
             continue
         break
-    scrubbed = "\n\n".join(paragraphs).strip()
-    return scrubbed or text  # never empty out the segment
+    scrubbed = "\n\n".join(paragraphs).strip() or text
+
+    degreeted = _SEGMENT_GREETING_RE.sub("", scrubbed, count=1).lstrip()
+    if degreeted != scrubbed:
+        log.warning("Scrubbing leaked episode greeting from segment.")
+    return degreeted or scrubbed  # never empty out the segment
+
+
+# Leaked episode greeting at the START of a segment (the intro already greets).
+# Matches "Welcome to Morning Signal." + any optional edition clause sentence.
+_SEGMENT_GREETING_RE = re.compile(
+    r"^\s*Welcome to Morning Signal[^.!?]*[.!?]\s*", re.IGNORECASE
+)
 
 
 _META_PREAMBLE_LINE_PATTERNS = [

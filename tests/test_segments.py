@@ -130,3 +130,22 @@ def test_scrub_segment_drops_leading_meta_preamble():
 def test_scrub_segment_never_empties():
     text = "Let me search for the latest."  # entirely meta → must not empty out
     assert claude._scrub_segment(text) == text
+
+
+def test_scrub_segment_strips_leaked_episode_greeting():
+    """A segment that re-greets ('Welcome to Morning Signal.') mid-episode
+    must have only the greeting sentence removed — keeping the real copy."""
+    text = "Welcome to Morning Signal. We start with fusion energy news today."
+    out = claude._scrub_segment(text)
+    assert out == "We start with fusion energy news today."
+
+
+def test_scrub_segment_strips_greeting_with_edition_clause():
+    text = "Welcome to Morning Signal, evening edition. Markets rallied today."
+    out = claude._scrub_segment(text)
+    assert out == "Markets rallied today."
+
+
+def test_scrub_segment_keeps_non_greeting_content():
+    text = "Markets rallied on strong earnings. Tech led the way."
+    assert claude._scrub_segment(text) == text
