@@ -218,9 +218,26 @@ def _generate_topic_segment(
         sys.exit(1)
     text = _scrub_segment(text)
     if char_budget is not None:
-        text = enforce_char_budget(text, char_budget, label=f"freeform:{topic}")
+        text = enforce_char_budget(text, char_budget, label=topic)
     log.info(f"  Segment {topic!r}: {len(text)} chars, ~{len(text.split())} words")
     return text
+
+
+_INTRO_RESERVE_CHARS = 200
+
+
+def _per_segment_char_budget(config: dict, n_segments: int) -> int:
+    """Per-segment char ceiling so the stitched episode stays under
+    ``episode_max_chars`` (default 9000 ≈ 10 min @ 150 wpm, 6 ch/word).
+
+    Equal allocation across all segments (catalog + freeform); the circuit
+    breaker truncates any segment that overruns its slot, which GUARANTEES the
+    episode max regardless of how loosely the model honors the word target.
+    A floor keeps slots sane if topic count is ever large.
+    """
+    max_chars = config.get("episode_max_chars", 9000)
+    n = max(1, n_segments)
+    return max(800, (max_chars - _INTRO_RESERVE_CHARS) // n)
 
 
 def generate_segments(config: dict, date_str: str, edition: str) -> list[tuple[str, str]]:
@@ -254,14 +271,21 @@ def generate_segments(config: dict, date_str: str, edition: str) -> list[tuple[s
 
     log.info(f"Segmented generation: {len(topics)} topics — {', '.join(topics)}")
 
-    word_target = config.get("segment_word_target", 250)
+    # Per-segment char ceiling so intro + all segments stay under the episode
+    # max. Reserve a freeform slot in the divisor when one is configured so the
+    # catalog budget already accounts for it (freeform computes the same n).
+    has_freeform = bool((config.get("freeform_topic") or "").strip())
+    n_segments = len(topics) + (1 if has_freeform else 0)
+    per_seg = _per_segment_char_budget(config, n_segments)
+
+    word_target = config.get("segment_word_target", 200)
     segments: list[tuple[str, str]] = []
     for topic in topics:
         text = _generate_topic_segment(
             client=client, config=config, prompt_text=prompt_text,
             friendly_date=friendly_date, edition_label=edition_label, topic=topic,
             max_uses=max_uses, date_str=date_str, edition=edition,
-            word_target=word_target,
+            word_target=word_target, char_budget=per_seg,
         )
         segments.append((topic, text))
 
@@ -290,13 +314,20 @@ def generate_freeform_segment(config: dict, date_str: str, edition: str) -> tupl
     friendly_date = dt.strftime("%A, %B %-d, %Y")
     edition_label = "WEEKEND" if weekend else EDITION_LABELS[edition]
 
+    # Match generate_segments' divisor (catalog topics + this freeform slot) so
+    # the freeform share equals a catalog slot; cap by the tighter of that share
+    # and freeform_max_chars (the per-user worst-case bound).
+    n_segments = len(active_topics_for_edition(date_str, edition)) + 1
+    per_seg = _per_segment_char_budget(config, n_segments)
+    char_budget = min(config.get("freeform_max_chars", 3200), per_seg)
+
     log.info(f"Freeform segment requested: {topic!r}")
     text = _generate_topic_segment(
         client=client, config=config, prompt_text=prompt_text,
         friendly_date=friendly_date, edition_label=edition_label, topic=topic,
         max_uses=config.get("segment_search_max_uses", 5), date_str=date_str,
-        edition=edition, word_target=config.get("segment_word_target", 250),
-        char_budget=config.get("freeform_max_chars", 3200),
+        edition=edition, word_target=config.get("segment_word_target", 200),
+        char_budget=char_budget,
     )
     return topic, text
 
