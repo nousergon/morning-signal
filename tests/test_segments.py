@@ -78,6 +78,49 @@ def test_generate_segments_caps_search_per_topic(monkeypatch, seg_config):
     assert "3" in tool_blob and "max_uses" in tool_blob
 
 
+def test_enforce_char_budget_under_budget_unchanged():
+    text = "Short enough."
+    assert claude.enforce_char_budget(text, 100) == text
+
+
+def test_enforce_char_budget_truncates_at_sentence_boundary(caplog):
+    text = "First sentence here. Second sentence here. Third runs over the budget badly."
+    with caplog.at_level("WARNING"):
+        out = claude.enforce_char_budget(text, 45, label="freeform:Test")
+    assert len(out) <= 45
+    assert out.endswith(".")  # cut on a sentence boundary, not mid-word
+    assert "Third runs over" not in out
+    assert any("CIRCUIT-BREAKER" in r.message for r in caplog.records)
+
+
+def test_enforce_char_budget_hard_cut_when_no_boundary():
+    text = "x" * 200  # no sentence boundary at all
+    out = claude.enforce_char_budget(text, 50)
+    assert len(out) <= 50
+
+
+def test_generate_freeform_segment_none_when_unset(monkeypatch, seg_config):
+    _patch_common(monkeypatch)
+    assert claude.generate_freeform_segment(seg_config, "2026-05-28", "am") is None
+
+
+def test_generate_freeform_segment_returns_topic_and_text(monkeypatch, seg_config):
+    client = _patch_common(monkeypatch, text="Freeform copy on the requested subject.")
+    seg_config["freeform_topic"] = "The James Webb telescope"
+    result = claude.generate_freeform_segment(seg_config, "2026-05-28", "am")
+    assert result == ("The James Webb telescope", "Freeform copy on the requested subject.")
+    assert client.messages.create.call_count == 1
+
+
+def test_generate_freeform_segment_enforces_char_budget(monkeypatch, seg_config):
+    long_text = "This is a sentence. " * 500  # ~10K chars
+    _patch_common(monkeypatch, text=long_text)
+    seg_config["freeform_topic"] = "Something"
+    seg_config["freeform_max_chars"] = 300
+    _, text = claude.generate_freeform_segment(seg_config, "2026-05-28", "am")
+    assert len(text) <= 300
+
+
 def test_scrub_segment_drops_leading_meta_preamble():
     text = "Let me search for the latest on this.\n\nThe real segment copy starts here."
     out = claude._scrub_segment(text)

@@ -579,6 +579,43 @@ def test_main_segmented_mode_stitches_per_topic_segments(
 
 
 @mock_aws
+def test_main_segmented_mode_appends_freeform_segment(
+    fresh_ge_module, aws_env, tmp_episodes_dir, tmp_scripts_dir,
+    sample_config, monkeypatch, tmp_path
+):
+    """When a freeform topic is configured, its segment is appended last and
+    appears in the intro rundown + stitch."""
+    cfg_dict = {**sample_config, "public_topics_mode": True, "generation_mode": "segmented"}
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(json.dumps(cfg_dict))
+    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
+
+    monkeypatch.setattr(
+        fresh_ge_module, "generate_segments",
+        lambda config, date, ed: [("Markets & Economy", "Markets copy.")],
+    )
+    monkeypatch.setattr(
+        fresh_ge_module, "generate_freeform_segment",
+        lambda config, date, ed: ("My Custom Topic", "Freeform copy."),
+    )
+    stitched = {}
+    monkeypatch.setattr(
+        fresh_ge_module, "synthesize_segments",
+        lambda scripts, out, config: (stitched.update(scripts=scripts), out.write_bytes(b"AUDIO")),
+    )
+    monkeypatch.setattr(fresh_ge_module, "publish_to_s3", lambda *a, **k: None)
+
+    monkeypatch.setattr(sys, "argv", ["generate_episode.py", "--date", "2026-05-14", "--edition", "am"])
+    fresh_ge_module.main()
+
+    saved = (tmp_scripts_dir / "2026-05-14-am.md").read_text()
+    assert "Today: Markets & Economy, My Custom Topic." in saved
+    assert "## My Custom Topic" in saved
+    # freeform is the last stitched segment
+    assert stitched["scripts"][-1] == "Freeform copy."
+
+
+@mock_aws
 def test_main_failure_path_routes_through_flow_doctor_guard(
     fresh_ge_module, aws_env, tmp_episodes_dir, tmp_scripts_dir,
     sample_config, monkeypatch, tmp_path
