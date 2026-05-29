@@ -13,7 +13,7 @@ from morning_signal import config as _config
 from morning_signal.claude import generate_script
 from morning_signal.notify import make_doctor, notify_success
 from morning_signal.publish import publish_to_s3
-from morning_signal.tts import tts_polly
+from morning_signal.tts import synthesize
 
 log = logging.getLogger("morning-signal")
 
@@ -76,7 +76,7 @@ from morning_signal.claude import EDITION_LABELS, generate_script, is_non_tradin
 from morning_signal.config import load_config, load_prompt  # noqa: E402,F401
 from morning_signal.notify import make_doctor, notify_success  # noqa: E402,F401
 from morning_signal.publish import publish_to_s3  # noqa: E402,F401
-from morning_signal.tts import _adjust_speed, _chunk_text, _concat_mp3s, tts_polly  # noqa: E402,F401
+from morning_signal.tts import _adjust_speed, _chunk_text, _concat_mp3s, synthesize, tts_google, tts_polly  # noqa: E402,F401
 
 __all__ = [
     "EDITION_LABELS",
@@ -101,6 +101,8 @@ __all__ = [
     "publish_to_s3",
     "save_metadata",
     "save_script",
+    "synthesize",
+    "tts_google",
     "tts_polly",
 ]
 
@@ -138,7 +140,10 @@ def _dry_run_report(config: dict, args) -> None:
     log.info(f"  Anthropic key:     {'set (' + str(len(os.environ.get('ANTHROPIC_API_KEY', ''))) + ' chars)' if os.environ.get('ANTHROPIC_API_KEY') else 'MISSING — wizard or env var needed'}")
     log.info(f"  S3 bucket:         {config.get('s3_bucket')}")
     log.info(f"  Feed base URL:     {config.get('base_url')}")
-    log.info(f"  TTS voice:         {config.get('tts', {}).get('polly_voice')} / {config.get('tts', {}).get('polly_engine')} / {config.get('tts', {}).get('speed')}x")
+    _tts = config.get('tts', {})
+    _tts_engine = _tts.get('engine', 'polly')
+    _tts_voice = _tts.get('google_voice') if _tts_engine == 'google' else f"{_tts.get('polly_voice')}/{_tts.get('polly_engine')}"
+    log.info(f"  TTS:               {_tts_engine} · {_tts_voice} · {_tts.get('speed')}x")
     log.info(f"  Notifications:     {'enabled → ' + str(config.get('notifications', {}).get('recipients', [])) if config.get('notifications', {}).get('enabled') else 'disabled'}")
     # AWS reach check (no boto3 call — just the credential resolution)
     try:
@@ -226,9 +231,10 @@ def main():
                 script_path = save_script(script, args.date, args.edition)
 
                 if not args.script_only:
-                    progress.update(phase, description="[bold blue]Synthesizing audio (Polly)")
+                    _engine = config.get("tts", {}).get("engine", "polly")
+                    progress.update(phase, description=f"[bold blue]Synthesizing audio ({_engine})")
                     audio_path = _config.EPISODES_DIR / f"{_episode_stem(args.date, args.edition)}.mp3"
-                    tts_polly(script, audio_path, config)
+                    synthesize(script, audio_path, config)
                     fresh_uploads.add(audio_path.name)
 
                 save_metadata(args.date, args.edition, script_path, audio_path)

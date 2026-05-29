@@ -63,6 +63,12 @@ dev = [
     "pytest-cov>=4.1.0",
     "moto[ses,s3,sts,ssm]>=5.0.0",
 ]
+# Google Chirp3 HD TTS engine (config tts.engine: google). Kept optional so
+# Polly-only installs stay light; tts_google fails loud with an install hint
+# if this extra is absent.
+google = [
+    "google-cloud-texttospeech>=2.16.0",
+]
 
 [project.scripts]
 morning-signal = "morning_signal.cli:main"

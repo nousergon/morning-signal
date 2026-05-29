@@ -8,9 +8,11 @@ config.yaml
 # LLM prompts (proprietary)
 prompt.md
 prompt_weekend.md
+prompt_public.md
 
 # Generated content
 episodes/
+bakeoff/
 # scripts/ holds generated episode scripts BUT also carries operational
 # Python artifacts (e.g. scripts/canary.py — ROADMAP L380 Phase A
 # canary).  Pattern-match excludes the .md files git would otherwise

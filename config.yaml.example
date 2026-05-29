@@ -25,10 +25,15 @@ podcast:
   explicit: false
   artwork: "artwork.jpg"  # 3000x3000 recommended. Place in project root.
 
-# ── TTS (Amazon Polly — uses existing AWS credentials) ──────────────────────
+# ── TTS ─────────────────────────────────────────────────────────────────────
 tts:
+  engine: "polly"          # "polly" (Amazon, uses AWS creds) or "google" (Chirp3 HD, uses GOOGLE_APPLICATION_CREDENTIALS)
+  # Polly (engine: polly)
   polly_voice: "Ruth"      # Ruth = British female, Matthew = US male, Joanna = US female
   polly_engine: "neural"   # "neural" (best quality) or "standard"
+  # Google Chirp3 HD (engine: google) — pip install '.[google]'; all Chirp3 voices same price (1M chars/mo free)
+  google_voice: "en-US-Chirp3-HD-Leda"
+  google_language: "en-US"
   speed: 1.0               # Playback speed multiplier; 1.0 = normal conversational pace, raise to 1.25–1.5 for fast brief
 
 # ── Generation ──────────────────────────────────────────────────────────────
