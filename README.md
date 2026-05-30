@@ -5,18 +5,18 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Auto-generated daily briefing podcast. A scheduler fires at 5 AM (and optionally 5 PM) Pacific, Claude with web search writes the script, Amazon Polly converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in any podcast app — episodes just show up on your phone.
+Auto-generated daily briefing podcast. A scheduler fires at 5 AM (and optionally 5 PM) Pacific, Claude with web search writes the script, a TTS engine (Amazon Polly or Google Chirp3 HD) converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in any podcast app — episodes just show up on your phone.
 
 ## How it works
 
 ```
 Scheduler (systemd timer / cron / launchd)
   │
-  ├─ 1. Load prompt + config (from local files OR SSM Parameter Store)
-  ├─ 2. Call Claude with web search → ~2,000-word script
-  ├─ 3. Call Amazon Polly → synthesize speech, ffmpeg speed-adjust
+  ├─ 1. Load prompt + config (local files; OR config/secrets from SSM + prompts from S3)
+  ├─ 2. Call Claude with web search → script (monolithic, or segmented per-topic)
+  ├─ 3. Call TTS engine (Polly or Google Chirp3 HD) → synthesize speech, ffmpeg speed-adjust
   ├─ 4. Upload MP3 + regenerate RSS feed → S3
-  ├─ 5. Email success/failure notification (optional, via SES)
+  ├─ 5. Send success/failure notification (optional, via Telegram)
   │
   └─ Episode appears in your podcast app within minutes
 ```
@@ -24,7 +24,7 @@ Scheduler (systemd timer / cron / launchd)
 Two production deployment styles are supported:
 
 - **Local CLI** (Mac/Linux dev) — reads `config.yaml`, `prompt.md`, and `.env` from disk. Schedule with cron or launchd.
-- **Cloud deploy** — runs on a long-lived EC2 instance under systemd, reads config + prompt + secrets from AWS SSM Parameter Store, assumes a dedicated IAM role for Polly + S3 + SSM + SES. Survives laptop sleep, supports DST-aware scheduling, and surfaces failures by email.
+- **Cloud deploy** — runs on a long-lived EC2 instance under systemd, reads small structured config + secrets from AWS SSM Parameter Store and the (larger) prompt files from S3, and assumes a dedicated IAM role for TTS + S3 + SSM. Survives laptop sleep, supports DST-aware scheduling, and surfaces failures over Telegram.
 
 ## Project structure
 
@@ -35,7 +35,9 @@ morning-signal/
 ├── config.yaml.example    Configuration template
 ├── prompt.md              YOUR PODCAST — weekday MORNING + EVENING editions
 ├── prompt_weekend.md      Weekend / NYSE-holiday AM deep-dive (tech / AI / research)
+├── prompt_public.md       Optional 10-topic catalog used by public-topics mode
 ├── run.sh                 Local-dev launcher (sources .env + venv → python)
+├── analyze_searches.py    Summarize web_search telemetry (top queries + domains)
 ├── pyproject.toml         Build + dependency manifest (single source of truth)
 ├── artwork.jpg            Podcast cover art (3000×3000 recommended)
 ├── tests/                 pytest suite (run via `pytest --cov`)
@@ -83,7 +85,7 @@ The bucket must be publicly readable so podcast apps can fetch the episodes.
 
 ```bash
 .venv/bin/python generate_episode.py --script-only   # Claude only, no TTS, no upload
-.venv/bin/python generate_episode.py --no-publish    # Add Polly, no upload
+.venv/bin/python generate_episode.py --no-publish    # Add TTS, no upload
 .venv/bin/python generate_episode.py                 # Full pipeline
 ```
 
@@ -103,9 +105,12 @@ The local CLI is fine for testing, but a laptop that sleeps at 5 AM won't run th
 The pipeline supports two environment-variable knobs that turn on production behavior:
 
 - `MORNING_SIGNAL_RUNNER_ROLE_ARN=<role-arn>` — at startup, call `sts:AssumeRole` and use that role's credentials for all subsequent boto3 clients. Lets you keep secrets/perms scoped to a dedicated runtime identity instead of the host's instance profile.
-- `MORNING_SIGNAL_USE_SSM=1` — fetch `config.yaml`, `prompt.md`, `prompt_weekend.md`, and `ANTHROPIC_API_KEY` from AWS SSM Parameter Store paths `/morning-signal/config-yaml`, `/morning-signal/prompt-md`, `/morning-signal/prompt-weekend-md`, `/morning-signal/anthropic-api-key` (SecureString). The weekend prompt is optional — falls back to the weekday prompt with a WARN log if missing. Override the region with `MORNING_SIGNAL_SSM_REGION` (default `us-east-1`).
+- `MORNING_SIGNAL_USE_SSM=1` — bootstrap config + secrets from SSM and prompts from S3:
+  - **From SSM Parameter Store** (small, structured, secret): `/morning-signal/config-yaml`, `/morning-signal/anthropic-api-key` (SecureString), and — when set — `/morning-signal/flow-doctor-telegram-bot-token`, `/morning-signal/flow-doctor-telegram-chat-id`, and `/morning-signal/gcp-tts-key` (the Google Chirp3 HD service-account JSON, materialized to a `0600` file and pointed at by `GOOGLE_APPLICATION_CREDENTIALS`). The Telegram + GCP params are optional — absent params are skipped.
+  - **From S3** (content whose size scales with the product): `prompt.md`, `prompt_weekend.md`, and `prompt_public.md`, fetched from `s3://{s3_bucket}/{prompts_s3_prefix}<file>` (the bucket comes from `config-yaml`; `prompts_s3_prefix` defaults to `prompts/`). The weekday prompt is required (boot fails loud if missing); the weekend + public prompts are optional. Prompts live in S3 rather than SSM because SSM Advanced-tier parameters cap at 8,192 chars and the catalog prompt exceeds that.
+  - Override the SSM region with `MORNING_SIGNAL_SSM_REGION` (default `us-east-1`).
 
-If neither is set, the script behaves as the local CLI — reads from disk, uses the default boto3 credential chain.
+If neither is set, the script behaves as the local CLI — reads config + all prompts from disk, uses the default boto3 credential chain.
 
 A representative systemd unit:
 
@@ -147,7 +152,9 @@ WantedBy=timers.target
 
 ## Two editions per day
 
-When the `--edition` flag is unset, it's inferred from the Pacific clock (`am` if local hour < 12, else `pm`). Filenames carry the suffix: `2026-05-14-am.mp3`, `2026-05-14-pm.mp3`. Each edition is told via the prompt to cover only news that has broken since the prior edition (~12-hour window), avoiding duplicated content.
+When the `--edition` flag is unset, it's inferred from the Pacific clock (`am` if local hour < 12, else `pm`), and the episode date is likewise stamped on the Pacific clock — so a 5 PM PT firing that lands after midnight UTC still stamps the correct local day. Filenames carry the suffix: `2026-05-14-am.mp3`, `2026-05-14-pm.mp3`. Each edition is told via the prompt to cover only news that has broken since the prior edition (~12-hour window), avoiding duplicated content.
+
+The AM edition runs every day (weekends and NYSE holidays use the deep-dive prompt). The PM edition is a weekday-evening brief only — weekend PM firings no-op cleanly, so a missing Saturday/Sunday evening episode is expected, not a failure.
 
 To run one edition daily, just omit the second `OnCalendar` line in the timer.
 
@@ -170,7 +177,7 @@ python generate_episode.py --script-only
 # Generate locally, skip S3
 python generate_episode.py --no-publish
 
-# Rebuild feed only (no Claude / Polly call), republish to S3
+# Rebuild feed only (no Claude / TTS call), republish to S3
 python generate_episode.py --publish-only
 ```
 
@@ -205,24 +212,56 @@ unless you want PR-reviewed prompt changes.
 
 ### `config.yaml` — Infrastructure + metadata
 
-- TTS voice + engine + playback speed
-- S3 bucket + base URL
+- **TTS engine** — `polly` (Amazon, uses AWS creds) or `google` (Chirp3 HD, e.g. the `en-US-Chirp3-HD-Leda` voice; needs `pip install '.[google]'` + `GOOGLE_APPLICATION_CREDENTIALS`)
+- TTS voice + playback speed (`speed` is a generation-time ffmpeg `atempo` multiplier)
+- `claude_model` + `max_tokens` + `web_search_max_uses` (per-episode search-fee ceiling)
+- S3 bucket + base URL (+ `prompts_s3_prefix` for the SSM/S3 production path)
 - Podcast title / description / category
-- Max episodes in the feed
-- SES notification recipients (optional)
+- `feed_max_episodes` — max episodes kept in the RSS feed
+- Generation-mode knobs — see below
+- Telegram notification creds (optional)
+
+### Generation modes
+
+Two optional modes layer on top of the default single-script behavior, both
+config-driven:
+
+- **`public_topics_mode`** (default `false`) — load `prompt_public.md`, a
+  10-topic catalog, and inject a deterministic rotating subset of topics per
+  edition instead of the personal `prompt.md` / `prompt_weekend.md`. See
+  `src/morning_signal/topic_rotation.py` for the rotation invariants.
+- **`generation_mode`** (`monolithic` default, or `segmented`) — `monolithic`
+  covers all active topics in one Claude call (cheapest). `segmented` makes one
+  independent Claude call + TTS render per topic and stitches them together —
+  more expensive, but each topic is generated once and is cacheable/reusable in
+  a multi-tenant setting. Only takes effect when `public_topics_mode` is on.
+- **Episode length guarantee** — in segmented mode, `episode_max_chars` (default
+  `9000` ≈ 10 min) is a *hard* ceiling: the per-segment char budget is split
+  across topics and a circuit breaker truncates any overrun at a word boundary
+  *before* TTS, so the stitched episode is guaranteed under the cap (and TTS
+  cost is bounded) regardless of how loosely the model honors `segment_word_target`.
 
 ## Cost
 
-For two editions per day (5 AM + 5 PM Pacific):
+Claude + web search dominates the per-episode cost, and it scales with how many
+web searches the model runs (Anthropic bills web-search result content as
+cache-create tokens). Rough per-episode figures from production telemetry:
 
-| Component | Per episode | Monthly (60 episodes) |
-|-----------|-------------|----------------------|
-| Claude Sonnet + web search | ~$0.03 | ~$1.80 |
-| Amazon Polly neural (~10 KB chars) | ~$0.04 | ~$2.40 |
-| S3 storage + transfer | ~$0.01 | ~$0.30 |
-| **Total** | **~$0.08** | **~$4.50** |
+| Component | Claude Sonnet | Claude Haiku |
+|-----------|---------------|--------------|
+| Claude + web search | ~$0.50–0.65 | ~$0.12 |
+| TTS (Polly neural, ~10 KB chars; Google Chirp3 HD has a 1M-char/mo free tier) | ~$0.04 | ~$0.04 |
+| S3 storage + transfer | ~$0.01 | ~$0.01 |
+| **Total** | **~$0.55–0.70** | **~$0.17** |
 
-One edition per day is half that. Add an always-on EC2 t3.micro (~$8/month) if you don't already have a host; serverless options (Lambda + EventBridge, Fly scheduled Machine) come in cheaper but require a container image because ffmpeg is needed for the speed adjustment.
+The biggest lever is the model choice (`claude_model`) and the per-episode
+search ceiling (`web_search_max_uses`, or `segment_search_max_uses` in segmented
+mode) — not the TTS engine. Run `analyze_searches.py` over a few days of
+`episodes/*.searches.jsonl` telemetry to find frequently-repeated queries worth
+replacing with curated sources. Add an always-on EC2 t3.micro (~$8/month) if you
+don't already have a host; serverless options (Lambda + EventBridge, Fly
+scheduled Machine) come in cheaper but require a container image because ffmpeg
+is needed for the speed adjustment.
 
 ## Tests
 
@@ -245,7 +284,7 @@ The suite uses `moto` for boto3 mocking and an inline anthropic mock — no real
 - Apple Podcasts can take 10–15 minutes to poll a new feed; Overcast / Pocket Casts are usually faster
 
 **TTS chunking artifacts** (slight pauses mid-script)
-- Polly's neural engine has a 3000-char per-request limit; the script chunks at sentence boundaries and concatenates. Try a different voice or `polly_engine: "standard"` in `config.yaml` if it bothers you.
+- Polly's neural engine has a 3000-char per-request limit; the script chunks at sentence boundaries and concatenates. Try a different voice or `polly_engine: "standard"` in `config.yaml` if it bothers you, or switch to the Google Chirp3 HD engine (`tts.engine: "google"`).
 
 **Re-publish everything**
 ```bash
@@ -259,9 +298,9 @@ python generate_episode.py --force
 
 ## Releasing to PyPI
 
-The `.github/workflows/publish.yml` workflow runs on any push of a tag matching `v*.*.*`. It builds an sdist + wheel, validates them with `twine check`, then publishes to PyPI via OIDC **trusted publishing** (no API token in repo secrets).
+The `.github/workflows/publish.yml` workflow runs on **every push to `main`**. It builds an sdist + wheel, validates them with `twine check`, then publishes to PyPI via OIDC **trusted publishing** (no API token in repo secrets), using `skip-existing` so the publish is idempotent — a version bump auto-publishes on merge, and an unchanged version is a no-op. (This replaced the old tag-triggered flow, which silently lapsed when tags weren't cut.)
 
-**One-time PyPI setup** (do this once on PyPI's web UI before tagging `v0.1.0`):
+**One-time PyPI setup** (do this once on PyPI's web UI before the first publish):
 
 1. Sign in at https://pypi.org/.
 2. Account → Publishing → "Add a new pending publisher".
@@ -276,15 +315,12 @@ The `.github/workflows/publish.yml` workflow runs on any push of a tag matching 
 **Cutting a release:**
 
 ```bash
-# 1. Bump __version__ in src/morning_signal/__init__.py (e.g., "0.1.0")
+# 1. Bump __version__ in src/morning_signal/__init__.py (e.g., "0.1.1")
 # 2. Update CHANGELOG.md (move Unreleased entries into a dated version section)
-# 3. Commit + push the version bump to main
-# 4. Tag + push the tag — the workflow takes it from there
-git tag v0.1.0
-git push origin v0.1.0
+# 3. Open a PR; merging it to main triggers the publish
 ```
 
-Within ~2 minutes the package appears at https://pypi.org/project/morning-signal/ and `pip install morning-signal` works for anyone.
+Within ~2 minutes of the merge the package appears at https://pypi.org/project/morning-signal/ and `pip install morning-signal` works for anyone. No tag step is required.
 
 ## License
 
