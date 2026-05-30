@@ -324,9 +324,25 @@ def test_final_text_empty_when_no_text_blocks():
     "Great news from the cosmos this week — scientists solved a decades-old mystery.",
     "Perfect storm of factors drove the rally Friday.",
     "I'll be honest, the jobs picture is murkier than ever.",
+    # "search results" as a news topic, mid-sentence — not the model's own results.
+    "Users seeking traditional search results have a clear exodus path now.",
+    "The new search results page rolled out to all users this week.",
+    # proactively audited false-positive risks (research/search/data as topics)
+    "Research on recent climate data shows accelerating ice loss.",
+    "Investors search for the latest yield data amid the selloff.",
+    "Here's the update on the wildfire containment effort.",
+    "Writers prepare coverage of the election across the network.",
+    "Scientists gather fresh data from the Webb telescope each week.",
 ])
 def test_scrub_segment_keeps_legit_conversational_openers(legit):
     assert claude._scrub_segment(legit) == legit
+
+
+def test_scrub_segment_drops_model_narrating_its_search_results():
+    """The model leading a line with 'The search results show…' is still meta."""
+    text = "The search results show mixed signals.\n\nThe S&P closed flat."
+    out = claude._scrub_segment(text)
+    assert out == "The S&P closed flat."
 
 
 @pytest.mark.parametrize("meta", [
