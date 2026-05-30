@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1rc12] — 2026-05-30
+
+Resync release: PyPI publishing had lapsed after `rc8` (rc9/rc10/rc11 were
+version-bumped but never tagged, so never published). This release republishes
+the accumulated unreleased work — the prompts-SSM→S3 / public-topics / search-
+telemetry block below (the rc11-era content) plus the 2026-05-30 fixes — and
+the publish workflow now triggers on push to `main` with `skip-existing`, so the
+cadence can no longer silently lapse.
+
+### Fixed
+- **TTS speed-adjust resilience (`tts._adjust_speed`).** `ffmpeg atempo` now retries with backoff (3 attempts) and, on final failure, raises loud while logging ffmpeg's captured stderr (previously swallowed by `check=True`). The 2026-05-30 Sat AM edition died with `SIGABRT` when the static ffmpeg build hit a transient allocation failure under memory pressure on the ~916 MB shared host — killing the whole episode at the final step. (#50)
+- **Meta-narration no longer leaks into segment audio.** Three-layer fix after the 2026-05-30 edition shipped the model's process talk ("I need to search…", "Based on the search results, I now have… Here's the segment:") to audio on 3/5 segments:
+  - `_final_text_after_last_tool` keeps only the text the model writes *after* its last `web_search` — removing pre/inter-search narration positionally (the primary defense), and hardened the per-segment instruction. (#52)
+  - `_scrub_segment` now scans every paragraph (not just leading) and drops stray `---` separators (#51); patterns rewritten high-precision so legitimate copy ("Let's start with the numbers.", "Great news from the cosmos.", "search results" as a news topic) is preserved (#53, #54).
+  - Companion system-prompt "web search hygiene" rule shipped in alpha-engine-config #387.
+- **Circuit-breaker no longer truncates to near-empty.** `enforce_char_budget` collapsed a 2,168-char markets segment to 4 chars when number-dense copy ("26,972.62") left the last sentence boundary very early. It now falls back to a word-boundary cut near the cap, always retaining ~the full budget. (#53)
+
 ### Changed
 - **Prompt loading migrated from SSM to S3 (production bootstrap path).** `aws._maybe_load_from_ssm` now fetches the three prompts (`prompt.md`, `prompt_weekend.md`, `prompt_public.md`) from `s3://{s3_bucket}/{prompts_s3_prefix}<file>` instead of from `/morning-signal/prompt-md` etc. in SSM. Triggered by `prompt_public.md` crossing the 8,192-char SSM Advanced-tier cap (alpha-engine-config #336 → #338 → #339). SSM keeps the small structured / secret material (config-yaml, anthropic-api-key, telegram creds) where SecureString is the right home; S3 keeps content whose size is a function of the product, not the storage. The morning-signal-runner-role already holds `s3:GetObject` on `morning-signal-podcast/*`, so no IAM change ships in this PR. New required config keys in `config-yaml`: `s3_bucket` (already present for podcast uploads — reused) and optional `prompts_s3_prefix` (default `prompts/`). If `s3_bucket` is missing from config-yaml, boot fails loud with `RuntimeError` per `feedback_no_silent_fails`. Weekend + public prompts remain optional in S3 (rollout window tolerance), with WARN-on-fallback to the weekday prompt for weekend (matches prior SSM-optional semantics). Companion PR: cipher813/alpha-engine-config #339 (sync.sh push to S3, README rewrite, prompt_public.md restored to full 11,353-char version). Old SSM prompt params are not deleted in this PR — they stay as rollback insurance during migration; a follow-up cleanup PR removes them after the soak validates the S3 path.
 
