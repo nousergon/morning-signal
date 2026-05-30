@@ -168,7 +168,17 @@ def enforce_char_budget(text: str, max_chars: int, *, label: str = "segment") ->
         return text
     window = text[:max_chars]
     cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
-    truncated = (window[: cut + 1] if cut > 0 else window).rstrip()
+    # Prefer the last sentence boundary, but only if it keeps most of the
+    # budget. Number-dense copy (e.g. a markets segment full of "26,972.62")
+    # can have its last ". " very early — cutting there would ship a near-empty
+    # segment (2026-05-30: a 2168-char Markets segment truncated to 4 chars).
+    # Fall back to the last word boundary near the cap so we always keep ~the
+    # full budget of content.
+    if cut >= int(max_chars * 0.6):
+        truncated = window[: cut + 1].rstrip()
+    else:
+        space = window.rfind(" ")
+        truncated = (window[:space] if space > 0 else window).rstrip()
     log.warning(
         f"CIRCUIT-BREAKER: {label} exceeded char budget "
         f"({len(text)} > {max_chars}); truncated to {len(truncated)} chars."
@@ -422,23 +432,39 @@ _SEGMENT_GREETING_RE = re.compile(
 )
 
 
+# HIGH-PRECISION meta-narration patterns. Since `_final_text_after_last_tool`
+# now removes pre/inter-search narration positionally (the primary defense),
+# this regex pass is a BACKSTOP — so it must err toward NOT matching. Each
+# pattern pairs a first-person / process cue with an explicit search/segment
+# object, so legitimate spoken copy that merely opens with "Let's…", "Great…",
+# or mentions "search results" as a news fact is preserved (2026-05-30:
+# "Let's start with the numbers." and "Great news from the cosmos this week."
+# were false-positived by the older bare-opener patterns).
 _META_PREAMBLE_LINE_PATTERNS = [
-    # First-person task framing ("I'll gather…", "I need to search…", "Let me craft…").
-    re.compile(r"^\s*(I'll|I will|I need to|I need more|I'm going to|I am going to|I have|I've|Let me|Let's|Now let me|First,?\s+let me)\b", re.IGNORECASE),
-    # Acknowledgement openers the model emits before "delivering" ("Perfect.", "Great,").
-    re.compile(r"^\s*(Great|Sure|Okay|OK|Alright|Got it|Perfect|Excellent)[,.!:]?\s+", re.IGNORECASE),
-    # "Here's the X segment/coverage/briefing".
+    # First-person pronoun + a process verb/object ("Let me search…", "I need to
+    # gather…", "I'll pull the latest…", "Let me craft the segment"). Bare
+    # "Let's start with…" / "Let me walk you through…" do NOT match — no process cue.
+    re.compile(
+        r"^\s*(I'll|I will|I need to|I need more|I'm going to|I am going to|Let me|Let's|Now let me|First,?\s+let me)\b"
+        r".{0,40}\b(search|searching|gather|gathering|compile|compiling|research(ing)?|look(ing)?\s+up|fetch|pull(ing)?|find\b|the segment|the coverage|the briefing|enough info|more info|the latest|fresh info)",
+        re.IGNORECASE,
+    ),
+    # Bare acknowledgement that the model emits before "delivering" — REQUIRES
+    # trailing punctuation ("Perfect.", "Great,") so "Great news…" / "Perfect
+    # storm…" (legit copy) are NOT matched.
+    re.compile(r"^\s*(Great|Sure|Okay|OK|Alright|Got it|Perfect|Excellent)[,.!:]\s", re.IGNORECASE),
+    # "Here's the X segment/coverage/briefing/edition".
     re.compile(r"^\s*Here(\s+is|'s)\s+(your|the|today's)\s+(edition|briefing|episode|update|segment|coverage)", re.IGNORECASE),
     # Search/gather/pull verb near a freshness/coverage noun ("search for the latest news…").
-    re.compile(r"\b(gather|search(ing)?\s+for|research|compile|look(ing)?\s+up|fetch|find|pull(ing)?)\b.{0,60}\b(fresh|latest|current|recent|information|news|data|info|updates?|developments?|coverage|results?)\b", re.IGNORECASE),
-    # "I now have enough/comprehensive … (info|coverage)".
-    re.compile(r"\bnow\s+have\s+(enough|comprehensive|good|solid|sufficient|all\s+the|the)\b", re.IGNORECASE),
+    re.compile(r"\b(gather|search(ing)?\s+for|research|look(ing)?\s+up|fetch|pull(ing)?\s+up)\b.{0,60}\b(fresh|latest|current|recent|information|news|data|info|updates?|developments?|coverage)\b", re.IGNORECASE),
+    # "I now have enough/comprehensive … " (kept narrow — drops the loose "the"/"good"/"all the").
+    re.compile(r"\bnow\s+have\s+(enough|comprehensive|sufficient|solid)\b", re.IGNORECASE),
     # References to the model's own search results ("the search results show/include…").
     re.compile(r"\b(the\s+)?search\s+results?\s+(show|indicate|reveal|confirm|suggest|include|are|have|point|cover|give|provide)\b", re.IGNORECASE),
     # "Based on/According to/Looking at … search …" framing.
     re.compile(r"^\s*(Based on|According to|Looking at|From|Drawing on)\b.{0,40}\bsearch(es|ing)?\b", re.IGNORECASE),
     # "to deliver/craft/write/prepare the segment/coverage/briefing".
-    re.compile(r"\b(deliver|craft|write|prepare|put\s+together|create|compile|build)\b.{0,40}\b(segment|coverage|briefing|edition|episode)\b", re.IGNORECASE),
+    re.compile(r"\b(craft|write|prepare|put\s+together|compile)\b.{0,40}\b(segment|coverage|briefing|edition|episode)\b", re.IGNORECASE),
     # "need (more|additional|fresher) current/recent information/coverage".
     re.compile(r"\bneed\s+(more|additional|fresher?|the\s+latest)\b.{0,30}\b(current|recent|up-to-date|information|data|coverage|news)\b", re.IGNORECASE),
 ]

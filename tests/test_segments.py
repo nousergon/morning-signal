@@ -311,3 +311,54 @@ def test_final_text_falls_back_when_nothing_after_last_tool():
 def test_final_text_empty_when_no_text_blocks():
     content = [_block("server_tool_use"), _block("web_search_tool_result")]
     assert claude._final_text_after_last_tool(content) == ""
+
+
+# --- 2026-05-30 false positives caught by the post-merge validation run ---
+# The high-precision rewrite must keep legitimate copy that merely opens with
+# "Let's"/"Let me"/"Great" but carries no search/segment process cue.
+
+@pytest.mark.parametrize("legit", [
+    "Let's start with the numbers.",
+    "Let me walk you through the highlights.",
+    "Let's turn to the markets.",
+    "Great news from the cosmos this week — scientists solved a decades-old mystery.",
+    "Perfect storm of factors drove the rally Friday.",
+    "I'll be honest, the jobs picture is murkier than ever.",
+])
+def test_scrub_segment_keeps_legit_conversational_openers(legit):
+    assert claude._scrub_segment(legit) == legit
+
+
+@pytest.mark.parametrize("meta", [
+    "Let me search for the latest market data.",
+    "I need to gather fresh info on the bond market.",
+    "I'll pull the latest developments first.",
+    "Perfect. I now have enough information.",
+    "Great, let me compile the segment.",
+])
+def test_scrub_segment_still_drops_real_meta_with_process_cue(meta):
+    # entirely-meta input → scrub would empty it → never-empty guard returns original
+    assert claude._scrub_segment(f"{meta}\n\nReal copy here.") == "Real copy here."
+
+
+# --- circuit-breaker must never truncate to near-empty (2026-05-30) ---
+
+def test_enforce_char_budget_falls_back_to_word_boundary_when_no_late_sentence():
+    """Number-dense copy whose only early '. ' boundary sits near the start
+    must NOT collapse to a few chars — fall back to a word-boundary cut that
+    keeps ~the full budget."""
+    text = "Q1. " + "word " * 1000  # only ". " is at index 2; rest has none
+    out = claude.enforce_char_budget(text, 200, label="Markets")
+    assert len(out) >= 120  # kept most of the 200-char budget, not ~3
+    assert out.endswith("word") or out[-1] != " "
+
+
+def test_enforce_char_budget_uses_sentence_boundary_when_late_enough():
+    sentences = "This is a full sentence. " * 20  # ". " boundaries throughout
+    out = claude.enforce_char_budget(sentences, 200, label="Topic")
+    assert len(out) <= 200
+    assert out.endswith(".")
+
+
+def test_enforce_char_budget_passthrough_under_budget():
+    assert claude.enforce_char_budget("Short copy.", 200) == "Short copy."
