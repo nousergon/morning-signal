@@ -131,8 +131,7 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
         episodes_dir=_config.EPISODES_DIR,
     )
 
-    script_parts = [b.text for b in response.content if b.type == "text"]
-    script = "\n\n".join(script_parts).strip()
+    script = _final_text_after_last_tool(response.content)
 
     if not script:
         log.error("Claude returned no text content.")
@@ -194,11 +193,17 @@ def _generate_topic_segment(
         f"Morning Signal. Cover ONLY the single topic \"{topic}\" in ~{word_target} "
         f"words, per the system prompt's treatment of that topic, respecting "
         f"the News Window for this edition (only news/events since the prior "
-        f"edition). Do NOT cover any other topic. Do NOT add an opening "
-        f"greeting, sign-off, or any meta-narration about searching. NEVER "
-        f"begin with \"Welcome to Morning Signal\" or any episode greeting — "
-        f"this is a mid-episode segment, not the start. Output only the spoken "
-        f"segment copy for \"{topic}\"."
+        f"edition). Do NOT cover any other topic. NEVER begin with \"Welcome to "
+        f"Morning Signal\" or any episode greeting — this is a mid-episode "
+        f"segment, not the start.\n\n"
+        f"CRITICAL — your response must contain ONLY the spoken segment copy. "
+        f"Your FIRST words must be that copy. After you finish searching, write "
+        f"NOTHING about the process: no acknowledgements (\"Perfect\", \"Great\", "
+        f"\"Got it\"), no narration about searching or gathering or having "
+        f"enough information (\"I need to search…\", \"Let me search…\", \"Based "
+        f"on the search results…\", \"I now have…\"), no framing (\"Here's the "
+        f"segment:\", \"to deliver this segment\"), and no separator lines like "
+        f"\"---\". Begin the spoken copy immediately."
     )
     payload = build_messages_payload(
         model=config.get("claude_model", "claude-sonnet-4-6"),
@@ -212,7 +217,7 @@ def _generate_topic_segment(
     record_call_cost(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
     record_searches(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
 
-    text = "\n\n".join(b.text for b in response.content if b.type == "text").strip()
+    text = _final_text_after_last_tool(response.content)
     if not text:
         log.error(f"Claude returned no text for segment topic {topic!r}.")
         sys.exit(1)
@@ -330,6 +335,36 @@ def generate_freeform_segment(config: dict, date_str: str, edition: str) -> tupl
         char_budget=char_budget,
     )
     return topic, text
+
+
+def _final_text_after_last_tool(content) -> str:
+    """Return only the text the model wrote AFTER its last tool use.
+
+    With server-side ``web_search`` the response interleaves blocks:
+    ``text`` / ``server_tool_use`` / ``web_search_tool_result`` / ``text`` …
+    The model narrates its plan in the text blocks emitted BEFORE and BETWEEN
+    searches ("I need to search for…", "Based on the search results, I now
+    have… Here's the segment:") and writes the actual spoken copy in the text
+    run AFTER its final search. Joining every text block dragged that narration
+    into the episode audio (2026-05-30). Keeping only the post-final-tool text
+    removes it at the source — positionally, with no pattern matching — so the
+    regex scrub becomes a backstop rather than the primary defense.
+
+    If the model never used a tool (no search), keep all text. If there is no
+    text after the final tool block (the model put everything before it), fall
+    back to all text blocks so we never silently drop the whole segment — the
+    scrub then cleans any preamble, and the fail-loud empty check still fires.
+    """
+    last_tool_idx = -1
+    for i, block in enumerate(content):
+        if block.type != "text":
+            last_tool_idx = i
+    tail = "\n\n".join(
+        b.text for b in content[last_tool_idx + 1:] if b.type == "text"
+    ).strip()
+    if tail:
+        return tail
+    return "\n\n".join(b.text for b in content if b.type == "text").strip()
 
 
 def _scrub_segment(text: str) -> str:

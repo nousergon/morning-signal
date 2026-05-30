@@ -267,3 +267,47 @@ def test_scrub_segment_preserves_third_person_news_content():
         "The company said it will deliver earnings guidance next quarter."
     )
     assert claude._scrub_segment(text) == text
+
+
+# --- structural fix: keep only text after the model's last tool use ---
+# The 2026-05-30 leak originated upstream of the regex scrub: the model emits
+# "I need to search…" / "Based on the search results…" as text blocks BEFORE
+# and BETWEEN its web_search calls, and we joined every text block.
+
+def _block(btype, text=""):
+    return SimpleNamespace(type=btype, text=text)
+
+
+def test_final_text_keeps_only_post_search_copy():
+    content = [
+        _block("text", "I need to search for recent market news to cover this."),
+        _block("server_tool_use"),
+        _block("web_search_tool_result"),
+        _block("text", "Based on the search results, here's the segment:"),
+        _block("server_tool_use"),
+        _block("web_search_tool_result"),
+        _block("text", "Markets closed at record highs Friday."),
+    ]
+    assert claude._final_text_after_last_tool(content) == "Markets closed at record highs Friday."
+
+
+def test_final_text_no_tool_use_keeps_all_text():
+    """A response with no search keeps every text block (joined)."""
+    content = [_block("text", "Para one."), _block("text", "Para two.")]
+    assert claude._final_text_after_last_tool(content) == "Para one.\n\nPara two."
+
+
+def test_final_text_falls_back_when_nothing_after_last_tool():
+    """If the model left no text after its final tool block, fall back to all
+    text so we never silently drop the segment (fail-loud check still fires)."""
+    content = [
+        _block("text", "Here is the coverage."),
+        _block("server_tool_use"),
+        _block("web_search_tool_result"),
+    ]
+    assert claude._final_text_after_last_tool(content) == "Here is the coverage."
+
+
+def test_final_text_empty_when_no_text_blocks():
+    content = [_block("server_tool_use"), _block("web_search_tool_result")]
+    assert claude._final_text_after_last_tool(content) == ""
