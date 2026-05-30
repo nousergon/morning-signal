@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from morning_signal import tts
@@ -103,6 +105,51 @@ def test_synthesize_segments_single_script_renames(monkeypatch, tmp_path):
 def test_synthesize_segments_empty_raises(tmp_path):
     with pytest.raises(ValueError, match="no scripts"):
         tts.synthesize_segments([], tmp_path / "ep.mp3", {"tts": {}})
+
+
+def test_adjust_speed_retries_then_succeeds(monkeypatch, tmp_path):
+    """A transient ffmpeg abort (SIGABRT under memory pressure) should be ridden
+    out by the bounded retry rather than killing the episode."""
+    path = tmp_path / "ep.mp3"
+    path.write_bytes(b"original")
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        calls["n"] += 1
+        tmp = path.with_suffix(".tmp.mp3")
+        if calls["n"] < 2:  # first attempt aborts
+            tmp.write_bytes(b"partial")  # ffmpeg may leave a stub behind
+            raise subprocess.CalledProcessError(-6, cmd, stderr=b"Aborted (core dumped)")
+        tmp.write_bytes(b"sped-up")  # second attempt succeeds
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(tts.subprocess, "run", fake_run)
+    monkeypatch.setattr(tts.time, "sleep", lambda s: None)  # no real backoff
+
+    tts._adjust_speed(path, 1.5)
+
+    assert calls["n"] == 2
+    assert path.read_bytes() == b"sped-up"
+    assert not list(tmp_path.glob("*.tmp.mp3"))  # failed-attempt stub cleaned up
+
+
+def test_adjust_speed_raises_after_exhausting_retries(monkeypatch, tmp_path, caplog):
+    """On persistent failure, raise loud and surface ffmpeg's stderr (which
+    check=True would otherwise swallow)."""
+    path = tmp_path / "ep.mp3"
+    path.write_bytes(b"original")
+
+    def always_abort(cmd, **kwargs):
+        raise subprocess.CalledProcessError(-6, cmd, stderr=b"out of memory\nAborted")
+
+    monkeypatch.setattr(tts.subprocess, "run", always_abort)
+    monkeypatch.setattr(tts.time, "sleep", lambda s: None)
+
+    with caplog.at_level("ERROR"), pytest.raises(subprocess.CalledProcessError):
+        tts._adjust_speed(path, 1.5, attempts=3)
+
+    assert "out of memory" in caplog.text  # stderr surfaced, not swallowed
+    assert not list(tmp_path.glob("*.tmp.mp3"))
 
 
 def test_tts_google_missing_dep_raises_with_install_hint(monkeypatch, tmp_path):
