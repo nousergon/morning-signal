@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from morning_signal.aws import _aws_client
@@ -177,14 +178,40 @@ def _concat_mp3s(files: list[Path], output: Path) -> None:
             out.write(f.read_bytes())
 
 
-def _adjust_speed(path: Path, speed: float) -> None:
-    """Change playback speed without altering pitch using ffmpeg atempo filter."""
+def _adjust_speed(path: Path, speed: float, *, attempts: int = 3) -> None:
+    """Change playback speed without altering pitch using ffmpeg atempo filter.
+
+    Retries with backoff: the production host is memory-constrained (~916 MB,
+    shared with other services), and under transient memory pressure the static
+    ffmpeg build has been observed to thrash on swap for ~50 s and then ``abort()``
+    (SIGABRT) on a failed allocation — killing the whole episode at the very last
+    step (2026-05-30 Sat AM). A bounded retry rides out the transient pressure; on
+    final failure we raise loud and surface ffmpeg's captured stderr (which
+    ``check=True`` otherwise swallows) so the real cause is in the logs, not lost.
+    """
     log.info(f"Adjusting speed to {speed}x...")
     tmp = path.with_suffix(".tmp.mp3")
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", str(path), "-filter:a", f"atempo={speed}",
-         "-vn", str(tmp)],
-        capture_output=True, check=True,
-    )
-    tmp.replace(path)
-    log.info(f"Speed adjusted to {speed}x")
+    cmd = ["ffmpeg", "-y", "-i", str(path), "-filter:a", f"atempo={speed}", "-vn", str(tmp)]
+    for attempt in range(1, attempts + 1):
+        try:
+            subprocess.run(cmd, capture_output=True, check=True)
+            tmp.replace(path)
+            log.info(f"Speed adjusted to {speed}x")
+            return
+        except subprocess.CalledProcessError as e:
+            tmp.unlink(missing_ok=True)
+            stderr = (e.stderr or b"").decode("utf-8", "replace").strip()
+            tail = "\n".join(stderr.splitlines()[-8:])
+            if attempt < attempts:
+                backoff = 5 * attempt
+                log.warning(
+                    f"ffmpeg atempo failed (attempt {attempt}/{attempts}, rc={e.returncode}); "
+                    f"retrying in {backoff}s. stderr tail:\n{tail}"
+                )
+                time.sleep(backoff)
+                continue
+            log.error(
+                f"ffmpeg atempo failed after {attempts} attempts (rc={e.returncode}). "
+                f"stderr tail:\n{tail}"
+            )
+            raise
