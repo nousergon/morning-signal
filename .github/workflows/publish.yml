@@ -1,9 +1,14 @@
 name: Publish to PyPI
 
+# Publishing triggers on every push to main and is idempotent via
+# skip-existing: a version bump in src/morning_signal/__init__.py auto-publishes
+# on merge; an unchanged version is a no-op. This eliminates the "forgot to cut
+# a tag" lapse that left rc9/rc10/rc11 unpublished (repo at rc11, PyPI at rc8).
+# Mirrors the alpha-engine-lib publish-on-main + skip-existing pattern.
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches:
+      - main
 
 jobs:
   build:
@@ -54,3 +59,7 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Idempotent: an unchanged version (no bump this push) is skipped, not
+          # an error — so publish-on-every-main-push is safe.
+          skip-existing: true
