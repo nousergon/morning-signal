@@ -191,3 +191,79 @@ def test_scrub_segment_strips_greeting_with_edition_clause():
 def test_scrub_segment_keeps_non_greeting_content():
     text = "Markets rallied on strong earnings. Tech led the way."
     assert claude._scrub_segment(text) == text
+
+
+# --- 2026-05-30 regression: meta-narration leaked to audio on 3 segments ---
+# The old leading-only loop broke at the first paragraph whose phrasing the
+# patterns didn't recognize, shielding every meta paragraph stacked behind it,
+# and several phrasings ("I need to…", "the search results show…", "Based on
+# the search results…") weren't matched at all. These pin the exact strings.
+
+def test_scrub_segment_drops_stacked_meta_paragraphs_and_separator():
+    """Markets segment: 2 meta paragraphs + a '---' separator before the copy.
+    The first old pattern matched, but the loop then broke on the second."""
+    text = (
+        "The search results show May 28 data but I need more current "
+        "information specifically for Friday evening. Let me search for more "
+        "recent market activity.\n\n"
+        "Perfect. I now have comprehensive market coverage for Friday. "
+        "Here's the Markets & Economy segment:\n\n"
+        "---\n\n"
+        "Markets wrapped up May on a strong note Friday as the three major "
+        "averages hit fresh record closes."
+    )
+    out = claude._scrub_segment(text)
+    assert out.startswith("Markets wrapped up May")
+    for leak in ("search results", "I now have", "Here's the", "Let me search", "---"):
+        assert leak not in out
+
+
+def test_scrub_segment_drops_i_need_to_search_preamble():
+    """Politics segment: 'I need to search…' was not in the old pattern set."""
+    text = (
+        "I need to search for recent political developments since Friday 5 PM "
+        "PT to deliver fresh coverage for this weekend edition.\n\n"
+        "Trump-backed Ken Paxton defeated Senator John Cornyn in Monday's "
+        "Republican Senate primary runoff."
+    )
+    out = claude._scrub_segment(text)
+    assert out.startswith("Trump-backed Ken Paxton")
+    assert "I need to search" not in out
+
+
+def test_scrub_segment_drops_based_on_search_results_preamble():
+    """Technology segment: 'Based on the search results, I now have…'."""
+    text = (
+        "Based on the search results, I now have comprehensive technology news "
+        "from the May 27-29 period to deliver for this weekend edition.\n\n"
+        "On the infrastructure front, Blue Origin's New Glenn rocket exploded "
+        "on the launchpad."
+    )
+    out = claude._scrub_segment(text)
+    assert out.startswith("On the infrastructure front")
+    assert "search results" not in out
+
+
+def test_scrub_segment_drops_meta_paragraph_between_content():
+    """A meta paragraph wedged BETWEEN two real paragraphs must also go —
+    the scrub scans all paragraphs, not just the leading run."""
+    text = (
+        "Stocks closed at record highs Friday.\n\n"
+        "Let me search for more detail on the bond market.\n\n"
+        "Treasury yields eased across the curve."
+    )
+    out = claude._scrub_segment(text)
+    assert "Let me search" not in out
+    assert "Stocks closed at record highs Friday." in out
+    assert "Treasury yields eased across the curve." in out
+
+
+def test_scrub_segment_preserves_third_person_news_content():
+    """High-precision patterns must not eat legitimate third-person reporting,
+    including sentences that mention 'search' or 'results' as news facts."""
+    text = (
+        "Google updated its search results ranking algorithm this week.\n\n"
+        "Election results showed a tight race in three swing districts.\n\n"
+        "The company said it will deliver earnings guidance next quarter."
+    )
+    assert claude._scrub_segment(text) == text

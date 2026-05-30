@@ -335,31 +335,49 @@ def generate_freeform_segment(config: dict, date_str: str, edition: str) -> tupl
 def _scrub_segment(text: str) -> str:
     """Clean a topic segment for stitching.
 
-    Two passes: (1) drop leading meta-preamble paragraphs (e.g. 'Let me search
-    for...'), reusing the patterns from ``_scrub_preamble``; (2) strip a leaked
-    episode greeting ('Welcome to Morning Signal...'). The system prompt
-    conditions the opener hard, so a per-topic call — especially the freeform
-    slice — sometimes reproduces it; left in, it re-greets mid-episode after
-    the intro already greeted once. The greeting belongs ONLY to the intro.
+    Two passes: (1) drop EVERY meta-narration paragraph — the model's
+    out-loud process talk ('I need to search for...', 'The search results
+    show...', 'Based on the search results, I now have...', 'Here's the X
+    segment:') plus any stray '---' separators it leaves between its preamble
+    and the real copy; (2) strip a leaked episode greeting ('Welcome to
+    Morning Signal...'). The system prompt conditions the opener hard, so a
+    per-topic call — especially the freeform slice — sometimes reproduces it;
+    left in, it re-greets mid-episode after the intro already greeted once.
+    The greeting belongs ONLY to the intro.
+
+    Pass (1) scans ALL paragraphs, not just leading ones, and never breaks
+    early: a 2026-05-30 regression shipped meta-narration to audio because the
+    old leading-only loop stopped at the first paragraph whose phrasing the
+    patterns didn't recognize, shielding every meta paragraph stacked behind
+    it. The meta patterns are first-person / process-specific ('I need to…',
+    'the search results show…', 'craft the segment') and effectively never
+    occur in third-person news copy, so scanning the whole segment is safe;
+    every drop is logged so any false positive is visible.
     """
-    paragraphs = text.split("\n\n")
-    while paragraphs:
-        first = paragraphs[0].strip()
-        if not first:
-            paragraphs.pop(0)
+    kept = []
+    for para in text.split("\n\n"):
+        stripped = para.strip()
+        if not stripped:
             continue
-        first_line = first.split("\n", 1)[0]
+        if _SEPARATOR_RE.fullmatch(stripped):
+            log.warning("Scrubbing stray separator paragraph from segment.")
+            continue
+        first_line = stripped.split("\n", 1)[0]
         if any(p.search(first_line) for p in _META_PREAMBLE_LINE_PATTERNS):
-            log.warning(f"Scrubbing segment meta-preamble: {first[:160]!r}")
-            paragraphs.pop(0)
+            log.warning(f"Scrubbing segment meta-preamble: {stripped[:160]!r}")
             continue
-        break
-    scrubbed = "\n\n".join(paragraphs).strip() or text
+        kept.append(stripped)
+    scrubbed = "\n\n".join(kept).strip() or text  # never empty out the segment
 
     degreeted = _SEGMENT_GREETING_RE.sub("", scrubbed, count=1).lstrip()
     if degreeted != scrubbed:
         log.warning("Scrubbing leaked episode greeting from segment.")
     return degreeted or scrubbed  # never empty out the segment
+
+
+# A paragraph that is only horizontal-rule / separator characters (e.g. the
+# '---' the model drops between its preamble and the real copy).
+_SEPARATOR_RE = re.compile(r"[-*_=\s]{3,}")
 
 
 # Leaked episode greeting at the START of a segment (the intro already greets).
@@ -370,11 +388,24 @@ _SEGMENT_GREETING_RE = re.compile(
 
 
 _META_PREAMBLE_LINE_PATTERNS = [
-    re.compile(r"^\s*(I'll|I will|Let me|Let's|I'm going to|I am going to|I have|I've|Now let me|First,?\s+let me)\b", re.IGNORECASE),
-    re.compile(r"^\s*(Great|Sure|Okay|OK|Alright|Got it|Perfect)[,.!]?\s+", re.IGNORECASE),
-    re.compile(r"^\s*Here(\s+is|'s)\s+(your|the|today's)\s+(edition|briefing|episode|update)", re.IGNORECASE),
-    re.compile(r"\b(gather|search\s+for|research|compile|look\s+up|fetch)\b.{0,40}\b(fresh|latest|current|information|news|data|info|updates?)\b", re.IGNORECASE),
-    re.compile(r"\bnow\s+have\s+enough\s+(info|information|data|context)\b", re.IGNORECASE),
+    # First-person task framing ("I'll gather…", "I need to search…", "Let me craft…").
+    re.compile(r"^\s*(I'll|I will|I need to|I need more|I'm going to|I am going to|I have|I've|Let me|Let's|Now let me|First,?\s+let me)\b", re.IGNORECASE),
+    # Acknowledgement openers the model emits before "delivering" ("Perfect.", "Great,").
+    re.compile(r"^\s*(Great|Sure|Okay|OK|Alright|Got it|Perfect|Excellent)[,.!:]?\s+", re.IGNORECASE),
+    # "Here's the X segment/coverage/briefing".
+    re.compile(r"^\s*Here(\s+is|'s)\s+(your|the|today's)\s+(edition|briefing|episode|update|segment|coverage)", re.IGNORECASE),
+    # Search/gather/pull verb near a freshness/coverage noun ("search for the latest news…").
+    re.compile(r"\b(gather|search(ing)?\s+for|research|compile|look(ing)?\s+up|fetch|find|pull(ing)?)\b.{0,60}\b(fresh|latest|current|recent|information|news|data|info|updates?|developments?|coverage|results?)\b", re.IGNORECASE),
+    # "I now have enough/comprehensive … (info|coverage)".
+    re.compile(r"\bnow\s+have\s+(enough|comprehensive|good|solid|sufficient|all\s+the|the)\b", re.IGNORECASE),
+    # References to the model's own search results ("the search results show/include…").
+    re.compile(r"\b(the\s+)?search\s+results?\s+(show|indicate|reveal|confirm|suggest|include|are|have|point|cover|give|provide)\b", re.IGNORECASE),
+    # "Based on/According to/Looking at … search …" framing.
+    re.compile(r"^\s*(Based on|According to|Looking at|From|Drawing on)\b.{0,40}\bsearch(es|ing)?\b", re.IGNORECASE),
+    # "to deliver/craft/write/prepare the segment/coverage/briefing".
+    re.compile(r"\b(deliver|craft|write|prepare|put\s+together|create|compile|build)\b.{0,40}\b(segment|coverage|briefing|edition|episode)\b", re.IGNORECASE),
+    # "need (more|additional|fresher) current/recent information/coverage".
+    re.compile(r"\bneed\s+(more|additional|fresher?|the\s+latest)\b.{0,30}\b(current|recent|up-to-date|information|data|coverage|news)\b", re.IGNORECASE),
 ]
 
 
