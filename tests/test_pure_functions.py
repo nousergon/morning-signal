@@ -102,6 +102,35 @@ def test_default_edition_noon_boundary(fresh_ge_module):
         assert fresh_ge_module._default_edition() == "pm"
 
 
+def test_default_date_friday_pm_stays_friday(fresh_ge_module):
+    """5 PM PT Friday must stamp Friday — NOT roll to Saturday via UTC.
+
+    Regression guard: a naive datetime.now() on a UTC box returns
+    Saturday at the 5 PM PT firing, which mis-skips the Friday PM as a
+    non-trading day. The Pacific-clock default keeps it on Friday.
+    """
+    fri_5pm_pt = datetime(2026, 5, 29, 17, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    with patch("morning_signal.episode.datetime") as mock_dt:
+        mock_dt.now.return_value = fri_5pm_pt
+        assert fresh_ge_module._default_date() == "2026-05-29"
+
+
+def test_default_date_sunday_pm_stays_sunday(fresh_ge_module):
+    """5 PM PT Sunday must stamp Sunday (skipped) — NOT roll to Monday (shipped)."""
+    sun_5pm_pt = datetime(2026, 5, 31, 17, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    with patch("morning_signal.episode.datetime") as mock_dt:
+        mock_dt.now.return_value = sun_5pm_pt
+        assert fresh_ge_module._default_date() == "2026-05-31"
+
+
+def test_default_date_am_unaffected(fresh_ge_module):
+    """5 AM PT stamps the same calendar day (UTC and PT agree at that hour)."""
+    wed_5am_pt = datetime(2026, 5, 13, 5, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    with patch("morning_signal.episode.datetime") as mock_dt:
+        mock_dt.now.return_value = wed_5am_pt
+        assert fresh_ge_module._default_date() == "2026-05-13"
+
+
 def test_save_script_writes_to_edition_path(fresh_ge_module, tmp_scripts_dir):
     path = fresh_ge_module.save_script("hello", "2026-05-14", "am")
     assert path == tmp_scripts_dir / "2026-05-14-am.md"
