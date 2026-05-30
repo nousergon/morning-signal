@@ -66,6 +66,22 @@ def _default_edition() -> str:
     return "am" if datetime.now(ZoneInfo("America/Los_Angeles")).hour < 12 else "pm"
 
 
+def _default_date() -> str:
+    """Default episode date by Pacific clock ('YYYY-MM-DD').
+
+    Must use Pacific time for the SAME reason as `_default_edition` — the
+    box clock is UTC, so a 5 PM PT firing has already rolled to the next
+    UTC calendar day. Stamping the date in UTC (naive `datetime.now()`)
+    mis-assigns the Friday-evening PM to Saturday (skipped as a
+    non-trading day) and the Sunday-evening PM to Monday (wrongly
+    shipped). Deriving date AND edition from the same Pacific `now`
+    keeps an edition on the calendar day it actually airs: PM ships
+    Mon-Fri evenings, skips Sat/Sun.
+    """
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+
+
 # Convenience re-exports so tests + downstream code can use
 # `from morning_signal import episode as ge; ge._chunk_text(...)` etc.
 # This mirrors the pre-refactor single-module surface. Listed in
@@ -84,6 +100,7 @@ __all__ = [
     "_aws_client",
     "_chunk_text",
     "_concat_mp3s",
+    "_default_date",
     "_default_edition",
     "_episode_stem",
     "_existing_episode",
@@ -167,7 +184,8 @@ def _dry_run_report(config: dict, args) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Morning Signal podcast generator")
-    parser.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"))
+    parser.add_argument("--date", default=None,
+                        help="Episode date (YYYY-MM-DD). Default: today on the Pacific clock.")
     parser.add_argument("--edition", choices=["am", "pm"], default=None,
                         help="Edition (am|pm). Default: inferred from clock (am if before noon PT).")
     parser.add_argument("--script-only", action="store_true",
@@ -182,6 +200,8 @@ def main():
                         help="Validate setup (config, prompt, env, AWS creds) without making any API calls")
     args = parser.parse_args()
 
+    if args.date is None:
+        args.date = _default_date()
     if args.edition is None:
         args.edition = _default_edition()
 
