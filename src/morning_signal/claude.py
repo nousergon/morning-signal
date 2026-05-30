@@ -453,18 +453,29 @@ _META_PREAMBLE_LINE_PATTERNS = [
     # trailing punctuation ("Perfect.", "Great,") so "Great news…" / "Perfect
     # storm…" (legit copy) are NOT matched.
     re.compile(r"^\s*(Great|Sure|Okay|OK|Alright|Got it|Perfect|Excellent)[,.!:]\s", re.IGNORECASE),
-    # "Here's the X segment/coverage/briefing/edition".
-    re.compile(r"^\s*Here(\s+is|'s)\s+(your|the|today's)\s+(edition|briefing|episode|update|segment|coverage)", re.IGNORECASE),
-    # Search/gather/pull verb near a freshness/coverage noun ("search for the latest news…").
-    re.compile(r"\b(gather|search(ing)?\s+for|research|look(ing)?\s+up|fetch|pull(ing)?\s+up)\b.{0,60}\b(fresh|latest|current|recent|information|news|data|info|updates?|developments?|coverage)\b", re.IGNORECASE),
+    # "Here's the X segment/briefing/edition" — production terms unlikely in
+    # content. Dropped "update"/"coverage" objects ("Here's the update on…" is
+    # plausible news copy).
+    re.compile(r"^\s*Here(\s+is|'s)\s+(your|the|today's)\s+(edition|briefing|episode|segment)\b", re.IGNORECASE),
+    # A LINE that LEADS with a search/gather process verb + freshness noun
+    # ("Searching for the latest news…"). Anchored + no "research" so content
+    # like "Investors search for the latest yield data" or "Research on recent
+    # data shows…" (mid-sentence / research-as-topic) is preserved.
+    re.compile(r"^\s*(I\s+)?(gather|gathering|search(ing)?\s+for|look(ing)?\s+up|fetch|pull(ing)?\s+up)\b.{0,40}\b(fresh|latest|current|recent|information|news|data|info|updates?|developments?)\b", re.IGNORECASE),
     # "I now have enough/comprehensive … " (kept narrow — drops the loose "the"/"good"/"all the").
     re.compile(r"\bnow\s+have\s+(enough|comprehensive|sufficient|solid)\b", re.IGNORECASE),
-    # References to the model's own search results ("the search results show/include…").
-    re.compile(r"\b(the\s+)?search\s+results?\s+(show|indicate|reveal|confirm|suggest|include|are|have|point|cover|give|provide)\b", re.IGNORECASE),
+    # The model narrating its OWN search results — must LEAD the line and use a
+    # strong reporting verb, so content that merely mentions "search results"
+    # mid-sentence (e.g. "Users seeking traditional search results have…", a
+    # real tech-segment topic) is preserved.
+    re.compile(r"^\s*(the\s+)?search\s+results?\s+(show|indicate|reveal|confirm|suggest|point\s+to)\b", re.IGNORECASE),
     # "Based on/According to/Looking at … search …" framing.
     re.compile(r"^\s*(Based on|According to|Looking at|From|Drawing on)\b.{0,40}\bsearch(es|ing)?\b", re.IGNORECASE),
-    # "to deliver/craft/write/prepare the segment/coverage/briefing".
-    re.compile(r"\b(craft|write|prepare|put\s+together|compile)\b.{0,40}\b(segment|coverage|briefing|edition|episode)\b", re.IGNORECASE),
+    # A LINE that LEADS with "craft/compile/put together … the segment/briefing"
+    # (first-person "Let me craft the segment" is already caught above). Anchored
+    # + dropped "write"/"coverage"/"edition" so "writers prepare coverage of the
+    # election" (content) is preserved.
+    re.compile(r"^\s*(I\s+)?(craft|crafting|compile|compiling|prepare|preparing|put\s+together)\b.{0,40}\b(segment|briefing|episode)\b", re.IGNORECASE),
     # "need (more|additional|fresher) current/recent information/coverage".
     re.compile(r"\bneed\s+(more|additional|fresher?|the\s+latest)\b.{0,30}\b(current|recent|up-to-date|information|data|coverage|news)\b", re.IGNORECASE),
 ]
