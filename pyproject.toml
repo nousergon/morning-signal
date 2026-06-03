@@ -54,7 +54,7 @@ dependencies = [
     # ``Message.model`` — required for the public-topics-mode Haiku path
     # to record cost telemetry without raising ``PriceCardLookupError``
     # (see alpha-engine-lib #84).
-    "alpha-engine-lib>=0.40.1,<0.41",
+    "alpha-engine-lib>=0.40.1,<0.46",
 ]
 
 [project.optional-dependencies]
