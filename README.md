@@ -5,7 +5,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Auto-generated daily briefing podcast. A scheduler fires at 5 AM (and optionally 5 PM) Pacific, Claude with web search writes the script, a TTS engine (Amazon Polly or Google Chirp3 HD) converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in any podcast app — episodes just show up on your phone.
+Auto-generated daily briefing podcast. A scheduler fires once daily at 5 AM Pacific, Claude with web search writes the script, a TTS engine (Amazon Polly or Google Chirp3 HD) converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in any podcast app — episodes just show up on your phone.
 
 ## How it works
 
@@ -136,12 +136,11 @@ PrivateTmp=true
 ```ini
 # /etc/systemd/system/morning-signal.timer
 [Unit]
-Description=Morning Signal — 5 AM + 5 PM Pacific (DST-aware)
+Description=Morning Signal — 5 AM Pacific (DST-aware)
 
 [Timer]
 Unit=morning-signal.service
 OnCalendar=*-*-* 05:00:00 America/Los_Angeles
-OnCalendar=*-*-* 17:00:00 America/Los_Angeles
 Persistent=true
 
 [Install]
@@ -150,13 +149,11 @@ WantedBy=timers.target
 
 `Persistent=true` catches missed firings — e.g., if the host was rebooting at the calendar moment, the run fires when the host comes back up. `America/Los_Angeles` automatically tracks PDT/PST.
 
-## Two editions per day
+## One edition per day
 
-When the `--edition` flag is unset, it's inferred from the Pacific clock (`am` if local hour < 12, else `pm`), and the episode date is likewise stamped on the Pacific clock — so a 5 PM PT firing that lands after midnight UTC still stamps the correct local day. Filenames carry the suffix: `2026-05-14-am.mp3`, `2026-05-14-pm.mp3`. Each edition is told via the prompt to cover only news that has broken since the prior edition (~12-hour window), avoiding duplicated content.
+The production deployment fires once daily at 5 AM Pacific. When the `--edition` flag is unset, it's inferred from the Pacific clock (`am` if local hour < 12, else `pm`), and the episode date is likewise stamped on the Pacific clock. Filenames carry the suffix: `2026-05-14-am.mp3`.
 
-The AM edition runs every day (weekends and NYSE holidays use the deep-dive prompt). The PM edition is a weekday-evening brief only — weekend PM firings no-op cleanly, so a missing Saturday/Sunday evening episode is expected, not a failure.
-
-To run one edition daily, just omit the second `OnCalendar` line in the timer.
+A second evening edition is still supported by the code: add a `OnCalendar=*-*-* 17:00:00 America/Los_Angeles` line to the timer and the 5 PM firing will produce a `pm` edition (each edition is prompted to cover only news that has broken since the prior one). The PM path no-ops cleanly on weekends and NYSE holidays. The cipher813 production runs a single 5 AM edition for lower cost and complexity.
 
 ## CLI reference
 
