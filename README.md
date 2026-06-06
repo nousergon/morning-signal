@@ -7,6 +7,8 @@
 
 Auto-generated daily briefing podcast. A scheduler fires once daily at 5 AM Pacific, Claude with web search writes the script, a TTS engine (Amazon Polly or Google Chirp3 HD) converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in any podcast app — episodes just show up on your phone.
 
+**Open-source and self-hostable.** You run it on your own Anthropic + AWS/GCP keys — no account, no platform lock-in. Because it publishes a standard RSS feed, it plays in whatever podcast app you already use (Apple Podcasts, Overcast, Pocket Casts…), which gives you playback speed, offline download, and CarPlay for free. New to the codebase? See [`ARCHITECTURE.md`](ARCHITECTURE.md); want to contribute? See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## How it works
 
 ```
@@ -30,19 +32,18 @@ Two production deployment styles are supported:
 
 ```
 morning-signal/
-├── generate_episode.py    Main script — generates and publishes one episode
-├── feed.py                RSS feed builder (Apple-compatible)
-├── config.yaml.example    Configuration template
-├── prompt.md              YOUR PODCAST — weekday MORNING + EVENING editions
-├── prompt_weekend.md      Weekend / NYSE-holiday AM deep-dive (tech / AI / research)
-├── prompt_public.md       Optional 10-topic catalog used by public-topics mode
-├── run.sh                 Local-dev launcher (sources .env + venv → python)
-├── analyze_searches.py    Summarize web_search telemetry (top queries + domains)
-├── pyproject.toml         Build + dependency manifest (single source of truth)
+├── src/morning_signal/    The engine — episode, claude, tts, feed, aws, publish, notify, cli, … (see ARCHITECTURE.md)
+├── generate_episode.py    Entry-point shim → morning_signal.cli (kept so existing systemd/launchd units keep working)
+├── prompt.example.md      Example prompt — copy to prompt.md and customize
+├── config.yaml.example    Configuration template — copy to config.yaml
 ├── artwork.jpg            Podcast cover art (3000×3000 recommended)
+├── pyproject.toml         Build + dependency manifest (single source of truth)
+├── ARCHITECTURE.md        Pipeline map + module guide + extension seams
+├── CONTRIBUTING.md        Dev setup + how to contribute (CODE_OF_CONDUCT.md, SECURITY.md alongside)
+├── analyze_searches.py    Summarize web_search telemetry (top queries + domains)
 ├── tests/                 pytest suite (run via `pytest --cov`)
+├── prompt.md / prompt_weekend.md / prompt_public.md   YOUR prompts (gitignored — start from prompt.example.md)
 ├── episodes/              Generated MP3s + metadata JSON (gitignored)
-├── scripts/               Generated transcripts (gitignored)
 └── feed.xml               Generated RSS (gitignored; also lives on S3)
 ```
 
@@ -60,7 +61,8 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 ```bash
 cp config.yaml.example config.yaml
 $EDITOR config.yaml          # set s3_bucket + base_url + podcast metadata
-$EDITOR prompt.md            # set segments, tickers, sources
+cp prompt.example.md prompt.md
+$EDITOR prompt.md            # set your segments, sources, and style (prompt.md is gitignored)
 echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env
 ```
 
@@ -268,6 +270,10 @@ is needed for the speed adjustment.
 ```
 
 The suite uses `moto` for boto3 mocking and an inline anthropic mock — no real API calls. Coverage target: 80%+.
+
+## Contributing
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup and [`ARCHITECTURE.md`](ARCHITECTURE.md) for how the pipeline fits together. The most natural place to extend is a **new TTS engine**: `tts.synthesize()` is a clean dispatcher, so adding one alongside Polly and Google is a small, self-contained change. Bug reports and PRs that reproduce on a fresh `pip install` get prioritized. By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md); security issues go through [`SECURITY.md`](SECURITY.md).
 
 ## Alpha disclaimer
 
