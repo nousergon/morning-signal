@@ -7,6 +7,9 @@
 s3_bucket: "your-bucket-name"
 s3_region: "us-west-2"
 s3_prefix: ""  # optional subfolder, e.g. "podcast/"
+# Cloud-deploy only: S3 prefix the prompt files are loaded from when running
+# with MORNING_SIGNAL_USE_SSM=1. Local runs read prompt.md from disk and ignore this.
+prompts_s3_prefix: "prompts/"
 
 # The public base URL where your files are served.
 # If using CloudFront: https://d1234abcd.cloudfront.net
