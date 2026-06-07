@@ -7,7 +7,18 @@
 
 Auto-generated daily briefing podcast. A scheduler fires once daily at 5 AM Pacific, Claude with web search writes the script, a TTS engine (Amazon Polly or Google Chirp3 HD) converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in any podcast app — episodes just show up on your phone.
 
-**Open-source and self-hostable.** You run it on your own Anthropic + AWS/GCP keys — no account, no platform lock-in. Because it publishes a standard RSS feed, it plays in whatever podcast app you already use (Apple Podcasts, Overcast, Pocket Casts…), which gives you playback speed, offline download, and CarPlay for free. New to the codebase? See [`ARCHITECTURE.md`](ARCHITECTURE.md); want to contribute? See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+**Open-source and self-hostable.** You run it on your own keys — no morning-signal account, no platform lock-in. Because it publishes a standard RSS feed, it plays in whatever podcast app you already use (Apple Podcasts, Overcast, Pocket Casts…), which gives you playback speed, offline download, and CarPlay for free. New to the codebase? See [`ARCHITECTURE.md`](ARCHITECTURE.md); want to contribute? See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Requirements
+
+To run your own briefing today you need:
+
+- **Python 3.9+** and **[ffmpeg](https://ffmpeg.org/)** (audio concat + speed adjust).
+- **An Anthropic API key** — Claude writes the script. *Always required.*
+- **A text-to-speech backend** — one of: an **AWS account** (Amazon Polly, the default) **or** a **Google Cloud account** (Chirp3 HD via `pip install '.[google]'`).
+- **A place to publish** the MP3 + RSS feed — currently an **AWS S3** bucket (or anything that serves the same `feed.xml` + `episodes/` over HTTP).
+
+> **No fully-offline mode yet.** TTS and publishing both currently require a cloud account (AWS or GCP). A local/offline TTS engine and a zero-cloud output backend are the most-wanted contributions — see [`CONTRIBUTING.md`](CONTRIBUTING.md) and the open issues. The engine seams (`tts.synthesize()`, the publish step) are designed to make these drop-in.
 
 ## How it works
 

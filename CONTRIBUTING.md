@@ -26,9 +26,15 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the pipeline map and module guide.
 
 ## What to work on
 
-- **New TTS engines** are the most natural contribution — `tts.synthesize()` is a clean dispatcher; add an engine alongside `tts_polly` / `tts_google`.
+The two **most-wanted** contributions both chip away at the same goal — letting someone run Morning Signal with **only an Anthropic key, no AWS or GCP account**:
+
+- **[#60 — Local/offline TTS engine](https://github.com/cipher813/morning-signal/issues/60)** — add a `"local"` engine (e.g. pyttsx3 or Piper) alongside `tts_polly` / `tts_google`. `tts.synthesize()` is a clean dispatcher, so this is a self-contained add.
+- **[#61 — Zero-cloud output backend](https://github.com/cipher813/morning-signal/issues/61)** — publish the MP3 + `feed.xml` to a local directory (and serve it) instead of S3.
+
+These are deliberately left for contributors — the maintainer runs the cloud path daily and is keeping the maintained surface small, so local/offline backends are exactly where outside help moves the project most. Both issues describe the seam to build against.
+
 - **Bug fixes** and **test coverage** are always welcome.
-- **New features:** open an issue first to align on shape. The engine is intentionally small.
+- **Other new features:** open an issue first to align on shape. The engine is intentionally small.
 
 ## Scope & boundaries
 
