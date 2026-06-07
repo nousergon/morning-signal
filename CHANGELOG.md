@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-06-07
+
+First stable release. Seals the `0.1.1rc1`–`rc12` line — no code-behavior
+changes from `rc12`; this is the release-discipline cut that makes the package
+something an outside self-hoster can depend on. `0.1.x` is deliberate: the
+product is real and runs daily, but the CLI + config surface may still evolve,
+so this is *not* sold as a finished `1.0`.
+
+### Changed
+- **Docs honesty pass for outside users.** README gains an explicit upfront
+  **Requirements** block (Python 3.9+, ffmpeg, an Anthropic key always, plus a
+  TTS backend = AWS *or* GCP, plus an S3 bucket to publish), and states plainly
+  that there is **no fully-offline mode yet** — TTS and publishing both require
+  a cloud account today. A local/offline TTS engine and a zero-cloud output
+  backend are called out as the most-wanted contributions (the `tts.synthesize()`
+  and publish seams are built to make them drop-in). Corrected the stale package
+  docstring that still referenced SES email (retired in favor of Telegram).
+
 ## [0.1.1rc12] — 2026-05-30
 
 Resync release: PyPI publishing had lapsed after `rc8` (rc9/rc10/rc11 were
