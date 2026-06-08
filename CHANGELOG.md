@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-06-08
+
+### Changed
+
+- Pin `flow-doctor==0.5.0` (was `0.5.0rc3`). flow-doctor cut its first
+  stable release after a ~4-week soak with morning-signal as the first
+  live consumer; this drops the rc pin onto the final tag now that it's
+  on PyPI.
+
 ## [0.1.1] — 2026-06-07
 
 First stable release. Seals the `0.1.1rc1`–`rc12` line — no code-behavior

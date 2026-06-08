@@ -31,10 +31,8 @@ dependencies = [
     "boto3>=1.35.0",
     "pyyaml>=6.0",
     "typer>=0.12.0",
-    # Telegram-routed failure + healthy-completion pings. While the
-    # 0.5.0 series is in its rc cycle, pin the rc explicitly; drop
-    # the `rc` suffix once 0.5.0 final ships.
-    "flow-doctor==0.5.0rc3",
+    # Telegram-routed failure + healthy-completion pings.
+    "flow-doctor==0.5.0",
     # Anthropic cost telemetry — token + server-tool fee accounting
     # against a packaged price card. Consumer of
     # ``alpha_engine_lib.cost.record_anthropic_call`` (lifted to lib
