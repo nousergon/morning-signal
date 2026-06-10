@@ -1,0 +1,29 @@
+# Example systemd unit — outcome-based freshness watchdog for morning-signal.
+#
+# Pairs with morning-signal-watchdog.timer. Verifies that today's episode
+# actually landed in S3 a little after the generate slot, and alerts (via the
+# Telegram notifier configured in your config.yaml) if it is missing or stale.
+# This catches the SILENT failure modes the generate run's in-process notifier
+# cannot report: bootstrap/credential failures, the generate timer never
+# firing, or an OOM kill.
+#
+# Adjust User=, the venv path in ExecStart, and any MORNING_SIGNAL_* env to
+# match your install. Drop both files in /etc/systemd/system/, then:
+#   systemctl daemon-reload && systemctl enable --now morning-signal-watchdog.timer
+
+[Unit]
+Description=Morning Signal — verify today's episode published (freshness watchdog)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=podcast
+# Use the console script from your install's virtualenv.
+ExecStart=/home/podcast/morning-signal/.venv/bin/morning-signal watchdog --notify
+# A missing/stale episode exits 1 — surface it in `systemctl status` but don't
+# spam the journal with a restart loop (the timer re-checks tomorrow).
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

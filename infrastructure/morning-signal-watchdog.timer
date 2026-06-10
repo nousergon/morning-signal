@@ -1,0 +1,19 @@
+# Example systemd timer — runs the freshness watchdog shortly after the
+# generate slot. If your generate timer fires at 05:00 local, 05:30 gives the
+# pipeline time to finish (script + TTS + S3 publish) before the check runs.
+#
+# OnCalendar accepts a timezone suffix so the check tracks DST automatically;
+# change America/Los_Angeles to your generate timer's zone.
+
+[Unit]
+Description=Run the Morning Signal freshness watchdog after the generate slot
+Requires=morning-signal-watchdog.service
+
+[Timer]
+OnCalendar=*-*-* 05:30:00 America/Los_Angeles
+# Catch up one missed run if the host was down at the scheduled slot.
+Persistent=true
+Unit=morning-signal-watchdog.service
+
+[Install]
+WantedBy=timers.target

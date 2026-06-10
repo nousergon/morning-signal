@@ -25,6 +25,8 @@ import typer
 
 from morning_signal import __version__
 
+log = logging.getLogger("morning-signal")
+
 
 # Paths the CLI auto-loads env vars from, in order. Earlier entries take
 # precedence (the first hit for a given key wins). `~/.config/morning-signal/.env`
@@ -77,6 +79,10 @@ def _load_env_files() -> None:
 app = typer.Typer(
     name="morning-signal",
     help="Auto-generated daily briefing podcast: Claude + Polly + S3.",
+    # Bare `morning-signal` shows help rather than generating — generation is a
+    # billable side effect (Claude + TTS + S3), so it must be explicit. The
+    # legacy `generate_episode.py` shim keeps its "bare == generate" contract
+    # via _is_legacy_invocation()'s program-name gate.
     no_args_is_help=True,
     add_completion=False,
 )
@@ -247,6 +253,70 @@ def subscribe() -> None:
 
 
 @app.command()
+def watchdog(
+    date: str = typer.Option(
+        None, "--date", help="Episode date (YYYY-MM-DD). Defaults to today (Pacific)."
+    ),
+    edition: Optional[str] = typer.Option(
+        None, "--edition", help="Edition (am|pm). Default: inferred from Pacific clock."
+    ),
+    max_age_hours: float = typer.Option(
+        6.0, "--max-age-hours", help="Alert if the episode's S3 object is older than this."
+    ),
+    notify: bool = typer.Option(
+        False, "--notify",
+        help="Send a Telegram alert via the configured notifier when the check fails.",
+    ),
+) -> None:
+    """Verify today's episode actually landed in S3 (outcome-based health check).
+
+    Exits 0 when the episode is present + fresh, 1 otherwise. Run it on a timer
+    shortly after the generate slot to catch the SILENT failure modes the
+    in-process notifier cannot report: bootstrap/AssumeRole/SSM failures, the
+    timer never firing, or an OOM kill. A bootstrap failure here surfaces as a
+    non-zero exit (the deployment wrapper turns that into an alert from an
+    identity independent of the runner role).
+    """
+    _setup_logging()
+
+    from morning_signal import aws as _aws
+    from morning_signal.config import load_config
+    from morning_signal.episode import _default_date, _default_edition
+    from morning_signal.watchdog import (
+        EpisodeMissing,
+        EpisodeStale,
+        check_episode_fresh,
+        send_alert,
+    )
+
+    _aws._AWS_SESSION = _aws._load_runner_session()
+    _aws._maybe_load_from_ssm()
+    config = load_config()
+
+    date = date or _default_date()
+    edition = edition or _default_edition()
+
+    try:
+        last_modified = check_episode_fresh(
+            config, date, edition, max_age_hours=max_age_hours
+        )
+    except (EpisodeMissing, EpisodeStale) as exc:
+        message = (
+            f"🚨 Morning Signal watchdog: {edition.upper()} episode for {date} "
+            f"is MISSING/STALE — {exc}"
+        )
+        log.error(message)
+        if notify:
+            send_alert(config, edition, message)
+        raise typer.Exit(code=1)
+
+    log.info(
+        f"Watchdog OK: {edition} episode for {date} present "
+        f"(LastModified={last_modified.isoformat()})."
+    )
+
+
+@app.command()
 def version() -> None:
     """Print the package version."""
     typer.echo(f"morning-signal {__version__}")
@@ -284,15 +354,28 @@ def main() -> None:
 
 
 def _is_legacy_invocation(argv: list[str]) -> bool:
-    """True if argv looks like the pre-typer flag-only invocation pattern.
+    """True if argv should transparently route to the `generate` subcommand.
 
-    The legacy pattern is: program [--flag ...] with no subcommand. Detect by
-    checking if argv[1] (if present) starts with '-' or is missing entirely.
+    Two legacy shapes route to `generate`:
+
+    1. **Flag-only argv** — ``prog [--flag ...]`` with no subcommand (the
+       pre-typer invocation pattern).
+    2. **Bare argv from the `generate_episode.py` shim** — a no-arg
+       ``python generate_episode.py`` whose documented contract is "generate
+       today's episode" (the prod systemd unit historically pointed here). We
+       gate this on the program name: the ``morning-signal`` console script is
+       deliberately NOT treated as legacy on a bare invocation, so a stray
+       ``morning-signal`` shows help (``no_args_is_help``) rather than silently
+       burning a Claude + TTS + S3 episode.
     """
     if len(argv) < 2:
-        return False
+        prog = os.path.basename(argv[0]) if argv else ""
+        return prog == "generate_episode.py"
     # If argv[1] is a known typer subcommand, it's NOT legacy.
-    if argv[1] in {"generate", "preview", "subscribe", "version", "init", "--help", "-h"}:
+    if argv[1] in {
+        "generate", "preview", "subscribe", "version", "init", "watchdog",
+        "--help", "-h",
+    }:
         return False
     return argv[1].startswith("-")
 
