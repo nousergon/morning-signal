@@ -161,4 +161,18 @@ def test_legacy_invocation_detection_help():
 
 
 def test_legacy_invocation_detection_no_args():
+    # Bare console-script invocation shows help (no_args_is_help), so it is
+    # NOT treated as legacy — generation must be explicit (it's billable).
     assert _is_legacy_invocation(["script.py"]) is False
+    assert _is_legacy_invocation(["morning-signal"]) is False
+
+
+def test_legacy_invocation_detection_bare_shim_routes_to_generate():
+    # The legacy generate_episode.py shim keeps its documented "bare ==
+    # generate today's episode" contract via the program-name gate.
+    assert _is_legacy_invocation(["generate_episode.py"]) is True
+    assert _is_legacy_invocation(["/home/ec2-user/morning-signal/generate_episode.py"]) is True
+
+
+def test_watchdog_subcommand_not_legacy():
+    assert _is_legacy_invocation(["script.py", "watchdog"]) is False

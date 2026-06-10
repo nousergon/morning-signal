@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-06-10
+
+### Added
+
+- **`morning-signal watchdog` — outcome-based freshness check.** A new
+  subcommand that verifies today's episode actually landed in S3 (present +
+  fresh within `--max-age-hours`, default 6) and exits non-zero otherwise.
+  Run it on a timer shortly after the generate slot to catch the SILENT
+  failure modes the in-process Telegram notifier cannot report: a
+  bootstrap/AssumeRole/SSM failure (which happens *before* the notifier creds
+  are loaded), the timer never firing, or an OOM kill. `--notify` sends a
+  Telegram alert via the configured notifier for self-hosters. Example systemd
+  units ship under `infrastructure/`.
+
+### Fixed
+
+- **S3 client now uses the bucket's region during SSM bootstrap.** `aws.py`
+  created the prompt-fetch S3 client in the SSM region (us-east-1) instead of
+  the bucket's `s3_region` (us-west-2), adding a cross-region redirect
+  round-trip per boot. (ROADMAP S2.)
+- **Legacy `generate_episode.py` shim no longer exits 2 on a bare
+  invocation.** `_is_legacy_invocation` now routes a no-arg call to `generate`
+  when (and only when) invoked via the `generate_episode.py` shim, matching its
+  documented contract. The `morning-signal` console script still shows help on a
+  bare call, so a stray invocation never silently burns an episode. (ROADMAP P1.6.)
+
 ## [0.1.2] — 2026-06-08
 
 ### Changed

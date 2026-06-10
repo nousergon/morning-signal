@@ -118,7 +118,12 @@ def _maybe_load_from_ssm() -> None:
         )
         raise RuntimeError("config-yaml missing s3_bucket")
 
-    s3 = _aws_client("s3", region_name=ssm_region)
+    # The podcast bucket lives in ``s3_region`` (us-west-2), NOT the SSM region
+    # (us-east-1). Creating the client in the wrong region works via S3's
+    # cross-region redirect but adds a round-trip per boot — read the declared
+    # bucket region from config-yaml, falling back to the SSM region only if
+    # absent. (Closes ROADMAP S2.)
+    s3 = _aws_client("s3", region_name=cfg.get("s3_region", ssm_region))
 
     def fetch_s3(key: str) -> str:
         """Read an S3 object body as UTF-8 text."""
