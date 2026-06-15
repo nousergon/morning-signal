@@ -49,6 +49,23 @@ max_tokens: 8192
 # ceiling, not a throttle. Omit to use the in-code default of 20.
 web_search_max_uses: 20
 
+# ── Pre-fetched News Context (optional, default OFF) ────────────────────────
+# When enabled, morning-signal reads a pre-built news digest JSON from S3 and
+# injects it into the Claude prompt so the model uses those pre-fetched items
+# for the covered topics instead of web-searching them (it still web-searches
+# anything NOT covered). Leave disabled (the default) to keep the standard
+# web-search-only behavior — when off, this block has zero effect.
+#
+# The digest is a JSON object of the shape
+#   {"schema_version": 1, "date": "...", "sections": {"<name>": [<item>, ...]}}
+# where each item has a `title` (required) plus optional `ticker`, `source`,
+# `published`, `excerpt`, `url`. Any error (missing object, bad JSON, etc.) is
+# fail-soft: a warning is logged and generation proceeds with web search.
+news_context:
+  enabled: false
+  s3_bucket: ""                                   # bucket holding the digest JSON (required when enabled)
+  s3_key: "data/news_digest_daily/latest.json"    # object key for the digest (default shown)
+
 # The episode prompt is fully yours to customize: edit ``prompt.md`` (and
 # ``prompt_weekend.md`` for weekend/holiday editions). See the ``data/prompt-*``
 # starters (markets-only, tech-only, generic-news, local-news, blank) for
