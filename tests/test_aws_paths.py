@@ -103,13 +103,12 @@ def _seed_ssm_and_s3(
     anthropic_key: str = "sk-fake-key",
     prompt_md: str = "# Test prompt",
     prompt_weekend_md: str | None = None,
-    prompt_public_md: str | None = None,
     extra_ssm_params: dict[str, str] | None = None,
 ) -> None:
     """Seed the SSM params + S3 objects the bootstrap path reads.
 
     SSM keeps: anthropic-api-key + config-yaml (small structured/secret).
-    S3 keeps:  prompt.md (+ optional weekend / public) at
+    S3 keeps:  prompt.md (+ optional weekend) at
                s3://{bucket}/{prompts_prefix}<file>.
 
     Bucket creation routed to ``REGION_S3`` (us-west-2) to match the
@@ -139,11 +138,6 @@ def _seed_ssm_and_s3(
         s3.put_object(
             Bucket=bucket, Key=f"{prompts_prefix}prompt_weekend.md",
             Body=prompt_weekend_md.encode(),
-        )
-    if prompt_public_md is not None:
-        s3.put_object(
-            Bucket=bucket, Key=f"{prompts_prefix}prompt_public.md",
-            Body=prompt_public_md.encode(),
         )
 
 
@@ -241,11 +235,11 @@ def test_maybe_load_from_ssm_fails_loudly_when_s3_bucket_missing_from_config(
 
 
 @mock_aws
-def test_maybe_load_from_ssm_loads_optional_weekend_and_public_prompts(
+def test_maybe_load_from_ssm_loads_optional_weekend_prompt(
     fresh_ge_module, aws_env, monkeypatch
 ):
-    """When the weekend and public prompts exist in S3, they're staged
-    to tmpdir and the config module's PROMPT_*_FILE paths point at them."""
+    """When the weekend prompt exists in S3, it's staged to tmpdir and
+    the config module's PROMPT_*_FILE paths point at the staged copies."""
     monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
     monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -253,14 +247,12 @@ def test_maybe_load_from_ssm_loads_optional_weekend_and_public_prompts(
     _seed_ssm_and_s3(
         prompt_md="weekday",
         prompt_weekend_md="weekend deep dive",
-        prompt_public_md="public 10-topic catalog",
     )
 
     fresh_ge_module._maybe_load_from_ssm()
 
     assert fresh_ge_module.PROMPT_FILE.read_text() == "weekday"
     assert fresh_ge_module.PROMPT_WEEKEND_FILE.read_text() == "weekend deep dive"
-    assert fresh_ge_module.PROMPT_PUBLIC_FILE.read_text() == "public 10-topic catalog"
 
 
 @mock_aws
@@ -275,7 +267,7 @@ def test_maybe_load_from_ssm_weekend_optional_falls_back_when_absent_from_s3(
     monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
-    _seed_ssm_and_s3(prompt_md="weekday only")  # no weekend, no public
+    _seed_ssm_and_s3(prompt_md="weekday only")  # no weekend prompt
 
     import logging
     with caplog.at_level(logging.WARNING):

@@ -36,33 +36,6 @@ def synthesize(script: str, output_path: Path, config: dict) -> None:
     fn(script, output_path, config)
 
 
-def synthesize_segments(scripts: list[str], output_path: Path, config: dict) -> None:
-    """Render each script independently via the configured engine, then concat
-    into one MP3 (the catalog-stitch path).
-
-    Each topic segment is synthesized separately — in the multi-tenant product
-    these per-topic renders are cached and reused across users; here (user-1
-    soak) they exercise the seam-coherence question: does audio assembled from
-    independently-rendered segments hold together? Raises on an empty list
-    rather than silently producing no audio.
-    """
-    if not scripts:
-        raise ValueError("synthesize_segments: no scripts provided")
-
-    temp_files = []
-    for i, text in enumerate(scripts):
-        seg = output_path.parent / f"_seg_{i:03d}.mp3"
-        synthesize(text, seg, config)
-        temp_files.append(seg)
-
-    if len(temp_files) == 1:
-        temp_files[0].rename(output_path)
-    else:
-        _concat_mp3s(temp_files, output_path)
-        for f in temp_files:
-            f.unlink(missing_ok=True)
-
-
 def tts_polly(script: str, output_path: Path, config: dict) -> None:
     """Synthesize speech via Amazon Polly. Uses existing AWS credentials."""
     tts_cfg = config.get("tts", {})

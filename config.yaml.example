@@ -45,54 +45,14 @@ max_tokens: 8192
 
 # Hard cap on Anthropic ``web_search`` server-tool requests per episode.
 # Insurance against runaway loops — Anthropic bills $10 per 1,000 search
-# requests. Typical episodes use ~15 searches across the 9 segments;
-# 20 sits above that as a ceiling, not a throttle. Omit to use the
-# in-code default of 20.
+# requests. Typical episodes use ~15 searches; 20 sits above that as a
+# ceiling, not a throttle. Omit to use the in-code default of 20.
 web_search_max_uses: 20
 
-# ── Public-topics mode (soak for the upcoming iOS-app product) ─────────────
-# When ``true``: load ``prompt_public.md`` (the 10-topic catalog) instead of
-# ``prompt.md`` / ``prompt_weekend.md``, and inject 5 active topics per
-# edition (3 fixed — Markets & Economy + Politics + Technology — plus 2
-# rotating wildcards from a 7-set, via deterministic round-robin). Designed
-# to dogfood the public-app catalog through Brian's existing morning-signal
-# cron before building the iOS-app topic-pack-cache infrastructure. Default
-# ``false`` preserves the personal-prompt behavior. See
-# ``src/morning_signal/topic_rotation.py`` for the rotation invariants.
-public_topics_mode: false
-
-# ── Generation mode (Phase A catalog-stitch, custom-podcast product) ───────
-# "monolithic" (default): one Claude call covers all active topics in a single
-# flowing script — cheapest, current behavior. "segmented": one independent
-# Claude call + TTS render PER topic, stitched into the episode. Segmented is
-# the product-faithful catalog-stitch path (a topic is generated once and, in
-# the multi-tenant product, cached + reused across users). Only takes effect
-# when public_topics_mode is also true. Trade-off: segmented fans out to N
-# calls (one per topic), so per-edition cost is higher than monolithic — that
-# is the product cost being validated, not a regression. See
-# private/custom-podcast-app-business-plan-260529.md §7.
-generation_mode: "monolithic"
-# Per-topic web-search ceiling in segmented mode (each topic call is capped
-# independently). N topics × this = the edition's search-fee ceiling.
-segment_search_max_uses: 5
-# Target words per segment (segmented mode) — the SOFT guide. Kept below the
-# per-segment char slot so segments usually fit without truncation.
-segment_word_target: 200
-# HARD episode ceiling (segmented mode). 9000 chars ≈ 10 min @ 150 wpm (6
-# ch/word). The budget is split equally across (topics + freeform); the circuit
-# breaker truncates any segment that overruns its slot, so the stitched episode
-# is GUARANTEED under this max regardless of how loosely the model honors the
-# word target. This is the "10-min max", not a soft target.
-episode_max_chars: 9000
-
-# Optional freeform topic (segmented mode only): a single user-chosen topic
-# appended as one extra ~300-word segment. Empty = no freeform slice. In the
-# multi-tenant product this is the per-user-controlled input; here it lets the
-# soak exercise the path. The render is hard-capped at freeform_max_chars by
-# the circuit breaker (claude.enforce_char_budget) BEFORE TTS — TTS bills per
-# char, so this cap (not the word target) is what bounds worst-case cost.
-freeform_topic: ""
-freeform_max_chars: 3200   # ~3 minutes spoken; the financial guarantee ceiling
+# The episode prompt is fully yours to customize: edit ``prompt.md`` (and
+# ``prompt_weekend.md`` for weekend/holiday editions). See the ``data/prompt-*``
+# starters (markets-only, tech-only, generic-news, local-news, blank) for
+# ready-made variants to copy from.
 
 # Max episodes to keep in the RSS feed (older episodes remain in S3 but
 # drop off the feed to keep it lightweight).

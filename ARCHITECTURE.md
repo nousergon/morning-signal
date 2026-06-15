@@ -20,7 +20,7 @@ A map of the codebase for readers and contributors. Morning Signal is a small (~
 7. Notify                           notify.py  (Telegram; the whole run is fail-loud-wrapped)
 ```
 
-Step 4 has two shapes: **monolithic** (one Claude call → whole script) and **segmented** (one call per topic, then stitched), selected by `generation_mode` + `public_topics_mode`. A hard **character-budget circuit-breaker** (`claude.enforce_char_budget`) caps length/cost before TTS.
+Step 2 is a single Claude call (`claude.generate_script`) with `web_search`, driven entirely by the user's prompt; post-processing scrubs any model meta-narration so only the spoken copy reaches TTS.
 
 ---
 
@@ -28,16 +28,15 @@ Step 4 has two shapes: **monolithic** (one Claude call → whole script) and **s
 
 | Module | LOC | Purpose |
 |---|---|---|
-| `episode.py` | 345 | **Orchestrator** — the `main()` that runs the 7 steps; mode branching (monolithic vs segmented) lives here. |
-| `claude.py` | 530 | **Script generation** via Claude + `web_search`. Three paths: `generate_script` (monolithic), `generate_segments` (per-topic), `generate_freeform_segment` (optional user topic). Post-processing: scrub meta-narration, `enforce_char_budget` (the length/cost circuit-breaker). |
-| `tts.py` | 217 | **Text → audio.** Engine-agnostic `synthesize()` dispatcher (`polly` \| `google`), `synthesize_segments()` (render each + concat), chunking, `ffmpeg atempo` speed adjust. **This dispatcher is the main extension seam** (see below). |
-| `config.py` | 58 | Config + prompt loading (`load_config`, `load_prompt` — selects weekday / weekend / public prompt). |
+| `episode.py` | ~310 | **Orchestrator** — the `main()` that runs the 7 steps. |
+| `claude.py` | ~270 | **Script generation** via Claude + `web_search` (`generate_script`). Post-processing: scrub model meta-narration so only spoken copy reaches TTS. |
+| `tts.py` | ~190 | **Text → audio.** Engine-agnostic `synthesize()` dispatcher (`polly` \| `google`), chunking, `ffmpeg atempo` speed adjust. **This dispatcher is the main extension seam** (see below). |
+| `config.py` | ~50 | Config + prompt loading (`load_config`, `load_prompt` — selects weekday / weekend prompt). |
 | `aws.py` | 215 | AWS session + the production bootstrap (AssumeRole, load config/secrets from SSM, prompts from S3, materialize GCP key). The local path skips all of this. |
 | `feed.py` | 171 | Builds the Apple/iTunes-compatible RSS feed from episode metadata. |
 | `publish.py` | 70 | Uploads MP3s + artwork + `feed.xml` to S3. |
 | `notify.py` | 175 | Telegram notification (via `flow-doctor`); `doctor.guard()` wraps the run and reports any uncaught exception (fail-loud). |
 | `cli.py` | 301 | Typer CLI (`generate` / `preview` / `subscribe` / `version` / `init`). |
-| `topic_rotation.py` | 92 | Deterministic public-topics rotation (3 fixed + 2 rotating wildcards, epoch-indexed). |
 | `cost_telemetry.py` | 66 | Per-edition Anthropic cost JSONL. |
 | `search_telemetry.py` | 129 | Per-edition web-search query/result JSONL. |
 | `init/wizard.py` | 601 | **Onboarding** — the interactive `morning-signal init` setup (AWS check, key validation, S3 bootstrap, config+prompt write, scheduler install, smoke test). The front door for a new self-hoster. |
@@ -60,7 +59,7 @@ A self-hoster only needs the **left column** — `pip install`, `morning-signal 
 ## How to extend
 
 - **Add a TTS engine** → `tts.py`: `synthesize()` is a clean dispatcher on `config.tts.engine`. Add your engine alongside `tts_polly` / `tts_google` and a branch. This is the cleanest seam in the codebase — built for exactly this.
-- **Change the script style / topics** → the prompt files (`prompt.md`, `prompt_public.md`) + `topic_rotation.py`. No code change for most edits.
+- **Change the script style / topics** → edit the prompt files (`prompt.md`, `prompt_weekend.md`); copy from the `src/morning_signal/data/prompt-*` starters. No code change.
 - **Swap the LLM model** → `config.yaml` (`model`); generation logic is in `claude.py`.
 - **Add an output/publish target** (beyond S3) → `publish.py` + `feed.py`.
 - **Change scheduling** → `init/wizard.py` installs the scheduler; the run is just `morning-signal generate`.

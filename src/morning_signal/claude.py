@@ -17,7 +17,6 @@ from morning_signal import config as _config
 from morning_signal.config import load_prompt
 from morning_signal.cost_telemetry import record_call_cost
 from morning_signal.search_telemetry import record_searches
-from morning_signal.topic_rotation import active_topics_for_edition
 
 log = logging.getLogger("morning-signal")
 
@@ -70,8 +69,7 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
 
     client = anthropic.Anthropic(max_retries=5)
     weekend = is_non_trading_day(date_str)
-    public_mode = bool(config.get("public_topics_mode", False))
-    prompt_text = load_prompt(weekend=weekend, public_mode=public_mode)
+    prompt_text = load_prompt(weekend=weekend)
 
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     friendly_date = dt.strftime("%A, %B %-d, %Y")
@@ -84,19 +82,9 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
         build_web_search_tool(max_uses=config.get("web_search_max_uses", 20))
     ]
 
-    if public_mode:
-        topics = active_topics_for_edition(date_str, edition)
-        log.info(f"Public-topics-mode active. Topics: {', '.join(topics)}")
-        topics_line = (
-            f" Active topics for this edition (cover only these, in this "
-            f"order, ~400 words each): {', '.join(topics)}."
-        )
-    else:
-        topics_line = ""
-
     user_content = (
         f"Today is {friendly_date}. This is the {edition_label} edition "
-        f"of Morning Signal.{topics_line} Generate today's "
+        f"of Morning Signal. Generate today's "
         f"{edition_label.lower()} episode per the system prompt, respecting "
         f"the News Window for this edition (only news/events since the "
         f"prior edition).\n\n"
@@ -151,202 +139,6 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     return script
 
 
-def enforce_char_budget(text: str, max_chars: int, *, label: str = "segment") -> str:
-    """Cap ``text`` at ``max_chars``, truncating at the last sentence boundary.
-
-    THE FINANCIAL CIRCUIT-BREAKER for the freeform slice: TTS bills per
-    character and an LLM will overshoot a "~3-minute" instruction, so the
-    char budget — not the word instruction — is what bounds worst-case
-    per-user cost (see private/custom-podcast-app-business-plan-260529.md §6).
-
-    Fail-loud: an overage is never silently shipped — it's recorded via a
-    WARN log naming the overage + label. (In the single-user cron the WARN
-    in cron.log is the recording surface; the multi-tenant product owes a
-    named CloudWatch metric + alarm here — Phase B.)
-    """
-    if len(text) <= max_chars:
-        return text
-    window = text[:max_chars]
-    cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
-    # Prefer the last sentence boundary, but only if it keeps most of the
-    # budget. Number-dense copy (e.g. a markets segment full of "26,972.62")
-    # can have its last ". " very early — cutting there would ship a near-empty
-    # segment (2026-05-30: a 2168-char Markets segment truncated to 4 chars).
-    # Fall back to the last word boundary near the cap so we always keep ~the
-    # full budget of content.
-    if cut >= int(max_chars * 0.6):
-        truncated = window[: cut + 1].rstrip()
-    else:
-        space = window.rfind(" ")
-        truncated = (window[:space] if space > 0 else window).rstrip()
-    log.warning(
-        f"CIRCUIT-BREAKER: {label} exceeded char budget "
-        f"({len(text)} > {max_chars}); truncated to {len(truncated)} chars."
-    )
-    return truncated
-
-
-def _generate_topic_segment(
-    *, client, config: dict, prompt_text: str, friendly_date: str,
-    edition_label: str, topic: str, max_uses: int, date_str: str, edition: str,
-    word_target: int = 400, char_budget: int | None = None,
-) -> str:
-    """One independent Claude call producing the spoken copy for a single topic.
-
-    Shared by the catalog loop (``generate_segments``) and the freeform slice
-    (``generate_freeform_segment``). Records cost + search telemetry, scrubs
-    meta-preamble, and — when ``char_budget`` is set — enforces the circuit
-    breaker before returning. Exits on empty output (fail-loud).
-    """
-    user_content = (
-        f"Today is {friendly_date}. This is the {edition_label} edition of "
-        f"Morning Signal. Cover ONLY the single topic \"{topic}\" in ~{word_target} "
-        f"words, per the system prompt's treatment of that topic, respecting "
-        f"the News Window for this edition (only news/events since the prior "
-        f"edition). Do NOT cover any other topic. NEVER begin with \"Welcome to "
-        f"Morning Signal\" or any episode greeting — this is a mid-episode "
-        f"segment, not the start.\n\n"
-        f"CRITICAL — your response must contain ONLY the spoken segment copy. "
-        f"Your FIRST words must be that copy. After you finish searching, write "
-        f"NOTHING about the process: no acknowledgements (\"Perfect\", \"Great\", "
-        f"\"Got it\"), no narration about searching or gathering or having "
-        f"enough information (\"I need to search…\", \"Let me search…\", \"Based "
-        f"on the search results…\", \"I now have…\"), no framing (\"Here's the "
-        f"segment:\", \"to deliver this segment\"), and no separator lines like "
-        f"\"---\". Begin the spoken copy immediately."
-    )
-    payload = build_messages_payload(
-        model=config.get("claude_model", "claude-sonnet-4-6"),
-        system_prompt=prompt_text,
-        user_content=user_content,
-        max_tokens=config.get("max_tokens", 4096),
-        tools=[build_web_search_tool(max_uses=max_uses)],
-        cache_system=True,
-    )
-    response = client.messages.create(**payload)
-    record_call_cost(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
-    record_searches(msg=response, date_str=date_str, edition=edition, episodes_dir=_config.EPISODES_DIR)
-
-    text = _final_text_after_last_tool(response.content)
-    if not text:
-        log.error(f"Claude returned no text for segment topic {topic!r}.")
-        sys.exit(1)
-    text = _scrub_segment(text)
-    if char_budget is not None:
-        text = enforce_char_budget(text, char_budget, label=topic)
-    log.info(f"  Segment {topic!r}: {len(text)} chars, ~{len(text.split())} words")
-    return text
-
-
-_INTRO_RESERVE_CHARS = 200
-
-
-def _per_segment_char_budget(config: dict, n_segments: int) -> int:
-    """Per-segment char ceiling so the stitched episode stays under
-    ``episode_max_chars`` (default 9000 ≈ 10 min @ 150 wpm, 6 ch/word).
-
-    Equal allocation across all segments (catalog + freeform); the circuit
-    breaker truncates any segment that overruns its slot, which GUARANTEES the
-    episode max regardless of how loosely the model honors the word target.
-    A floor keeps slots sane if topic count is ever large.
-    """
-    max_chars = config.get("episode_max_chars", 9000)
-    n = max(1, n_segments)
-    return max(800, (max_chars - _INTRO_RESERVE_CHARS) // n)
-
-
-def generate_segments(config: dict, date_str: str, edition: str) -> list[tuple[str, str]]:
-    """Generate one independent ~400-word segment per active topic.
-
-    This is the catalog-stitch generation path (Phase A step 2). Unlike
-    ``generate_script`` (one combined call covering all topics), each topic
-    gets its own Claude call so segments are independently producible — the
-    precondition for the multi-tenant product caching a topic once and reusing
-    it across every user who selects it.
-
-    Requires ``public_topics_mode`` (segments are a public-catalog concept).
-    Returns ``[(topic, segment_text), ...]`` in edition order. Per-topic search
-    budget is capped by ``segment_search_max_uses`` (default 5) so fan-out
-    can't blow the server-tool fee.
-    """
-    import anthropic
-
-    if not config.get("public_topics_mode", False):
-        raise ValueError("generate_segments requires public_topics_mode=true")
-
-    client = anthropic.Anthropic(max_retries=5)
-    weekend = is_non_trading_day(date_str)
-    prompt_text = load_prompt(weekend=weekend, public_mode=True)
-
-    dt = datetime.strptime(date_str, "%Y-%m-%d")
-    friendly_date = dt.strftime("%A, %B %-d, %Y")
-    edition_label = "WEEKEND" if weekend else EDITION_LABELS[edition]
-    topics = active_topics_for_edition(date_str, edition)
-    max_uses = config.get("segment_search_max_uses", 5)
-
-    log.info(f"Segmented generation: {len(topics)} topics — {', '.join(topics)}")
-
-    # Per-segment char ceiling so intro + all segments stay under the episode
-    # max. Reserve a freeform slot in the divisor when one is configured so the
-    # catalog budget already accounts for it (freeform computes the same n).
-    has_freeform = bool((config.get("freeform_topic") or "").strip())
-    n_segments = len(topics) + (1 if has_freeform else 0)
-    per_seg = _per_segment_char_budget(config, n_segments)
-
-    word_target = config.get("segment_word_target", 200)
-    segments: list[tuple[str, str]] = []
-    for topic in topics:
-        text = _generate_topic_segment(
-            client=client, config=config, prompt_text=prompt_text,
-            friendly_date=friendly_date, edition_label=edition_label, topic=topic,
-            max_uses=max_uses, date_str=date_str, edition=edition,
-            word_target=word_target, char_budget=per_seg,
-        )
-        segments.append((topic, text))
-
-    return segments
-
-
-def generate_freeform_segment(config: dict, date_str: str, edition: str) -> tuple[str, str] | None:
-    """Generate the optional user freeform-topic segment, char-budget-capped.
-
-    Reads ``freeform_topic`` from config; returns ``None`` when unset (no
-    freeform slice this edition). When set, generates one ~300-word segment
-    on that topic and enforces ``freeform_max_chars`` (default 3200 ≈ 3 min)
-    via the circuit breaker — this is the only per-user-controlled surface
-    and thus the one that bounds worst-case cost. Returns ``(topic, text)``.
-    """
-    import anthropic
-
-    topic = (config.get("freeform_topic") or "").strip()
-    if not topic:
-        return None
-
-    client = anthropic.Anthropic(max_retries=5)
-    weekend = is_non_trading_day(date_str)
-    prompt_text = load_prompt(weekend=weekend, public_mode=True)
-    dt = datetime.strptime(date_str, "%Y-%m-%d")
-    friendly_date = dt.strftime("%A, %B %-d, %Y")
-    edition_label = "WEEKEND" if weekend else EDITION_LABELS[edition]
-
-    # Match generate_segments' divisor (catalog topics + this freeform slot) so
-    # the freeform share equals a catalog slot; cap by the tighter of that share
-    # and freeform_max_chars (the per-user worst-case bound).
-    n_segments = len(active_topics_for_edition(date_str, edition)) + 1
-    per_seg = _per_segment_char_budget(config, n_segments)
-    char_budget = min(config.get("freeform_max_chars", 3200), per_seg)
-
-    log.info(f"Freeform segment requested: {topic!r}")
-    text = _generate_topic_segment(
-        client=client, config=config, prompt_text=prompt_text,
-        friendly_date=friendly_date, edition_label=edition_label, topic=topic,
-        max_uses=config.get("segment_search_max_uses", 5), date_str=date_str,
-        edition=edition, word_target=config.get("segment_word_target", 200),
-        char_budget=char_budget,
-    )
-    return topic, text
-
-
 def _final_text_after_last_tool(content) -> str:
     """Return only the text the model wrote AFTER its last tool use.
 
@@ -375,61 +167,6 @@ def _final_text_after_last_tool(content) -> str:
     if tail:
         return tail
     return "\n\n".join(b.text for b in content if b.type == "text").strip()
-
-
-def _scrub_segment(text: str) -> str:
-    """Clean a topic segment for stitching.
-
-    Two passes: (1) drop EVERY meta-narration paragraph — the model's
-    out-loud process talk ('I need to search for...', 'The search results
-    show...', 'Based on the search results, I now have...', 'Here's the X
-    segment:') plus any stray '---' separators it leaves between its preamble
-    and the real copy; (2) strip a leaked episode greeting ('Welcome to
-    Morning Signal...'). The system prompt conditions the opener hard, so a
-    per-topic call — especially the freeform slice — sometimes reproduces it;
-    left in, it re-greets mid-episode after the intro already greeted once.
-    The greeting belongs ONLY to the intro.
-
-    Pass (1) scans ALL paragraphs, not just leading ones, and never breaks
-    early: a 2026-05-30 regression shipped meta-narration to audio because the
-    old leading-only loop stopped at the first paragraph whose phrasing the
-    patterns didn't recognize, shielding every meta paragraph stacked behind
-    it. The meta patterns are first-person / process-specific ('I need to…',
-    'the search results show…', 'craft the segment') and effectively never
-    occur in third-person news copy, so scanning the whole segment is safe;
-    every drop is logged so any false positive is visible.
-    """
-    kept = []
-    for para in text.split("\n\n"):
-        stripped = para.strip()
-        if not stripped:
-            continue
-        if _SEPARATOR_RE.fullmatch(stripped):
-            log.warning("Scrubbing stray separator paragraph from segment.")
-            continue
-        first_line = stripped.split("\n", 1)[0]
-        if any(p.search(first_line) for p in _META_PREAMBLE_LINE_PATTERNS):
-            log.warning(f"Scrubbing segment meta-preamble: {stripped[:160]!r}")
-            continue
-        kept.append(stripped)
-    scrubbed = "\n\n".join(kept).strip() or text  # never empty out the segment
-
-    degreeted = _SEGMENT_GREETING_RE.sub("", scrubbed, count=1).lstrip()
-    if degreeted != scrubbed:
-        log.warning("Scrubbing leaked episode greeting from segment.")
-    return degreeted or scrubbed  # never empty out the segment
-
-
-# A paragraph that is only horizontal-rule / separator characters (e.g. the
-# '---' the model drops between its preamble and the real copy).
-_SEPARATOR_RE = re.compile(r"[-*_=\s]{3,}")
-
-
-# Leaked episode greeting at the START of a segment (the intro already greets).
-# Matches "Welcome to Morning Signal." + any optional edition clause sentence.
-_SEGMENT_GREETING_RE = re.compile(
-    r"^\s*Welcome to Morning Signal[^.!?]*[.!?]\s*", re.IGNORECASE
-)
 
 
 # HIGH-PRECISION meta-narration patterns. Since `_final_text_after_last_tool`

@@ -26,7 +26,7 @@ To run your own briefing today you need:
 Scheduler (systemd timer / cron / launchd)
   │
   ├─ 1. Load prompt + config (local files; OR config/secrets from SSM + prompts from S3)
-  ├─ 2. Call Claude with web search → script (monolithic, or segmented per-topic)
+  ├─ 2. Call Claude with web search → script (one call, driven by your prompt)
   ├─ 3. Call TTS engine (Polly or Google Chirp3 HD) → synthesize speech, ffmpeg speed-adjust
   ├─ 4. Upload MP3 + regenerate RSS feed → S3
   ├─ 5. Send success/failure notification (optional, via Telegram)
@@ -53,7 +53,7 @@ morning-signal/
 ├── CONTRIBUTING.md        Dev setup + how to contribute (CODE_OF_CONDUCT.md, SECURITY.md alongside)
 ├── analyze_searches.py    Summarize web_search telemetry (top queries + domains)
 ├── tests/                 pytest suite (run via `pytest --cov`)
-├── prompt.md / prompt_weekend.md / prompt_public.md   YOUR prompts (gitignored — start from prompt.example.md)
+├── prompt.md / prompt_weekend.md   YOUR prompts (gitignored — start from prompt.example.md)
 ├── episodes/              Generated MP3s + metadata JSON (gitignored)
 └── feed.xml               Generated RSS (gitignored; also lives on S3)
 ```
@@ -120,7 +120,7 @@ The pipeline supports two environment-variable knobs that turn on production beh
 - `MORNING_SIGNAL_RUNNER_ROLE_ARN=<role-arn>` — at startup, call `sts:AssumeRole` and use that role's credentials for all subsequent boto3 clients. Lets you keep secrets/perms scoped to a dedicated runtime identity instead of the host's instance profile.
 - `MORNING_SIGNAL_USE_SSM=1` — bootstrap config + secrets from SSM and prompts from S3:
   - **From SSM Parameter Store** (small, structured, secret): `/morning-signal/config-yaml`, `/morning-signal/anthropic-api-key` (SecureString), and — when set — `/morning-signal/flow-doctor-telegram-bot-token`, `/morning-signal/flow-doctor-telegram-chat-id`, and `/morning-signal/gcp-tts-key` (the Google Chirp3 HD service-account JSON, materialized to a `0600` file and pointed at by `GOOGLE_APPLICATION_CREDENTIALS`). The Telegram + GCP params are optional — absent params are skipped.
-  - **From S3** (content whose size scales with the product): `prompt.md`, `prompt_weekend.md`, and `prompt_public.md`, fetched from `s3://{s3_bucket}/{prompts_s3_prefix}<file>` (the bucket comes from `config-yaml`; `prompts_s3_prefix` defaults to `prompts/`). The weekday prompt is required (boot fails loud if missing); the weekend + public prompts are optional. Prompts live in S3 rather than SSM because SSM Advanced-tier parameters cap at 8,192 chars and the catalog prompt exceeds that.
+  - **From S3** (content whose size can exceed the SSM cap): `prompt.md` and `prompt_weekend.md`, fetched from `s3://{s3_bucket}/{prompts_s3_prefix}<file>` (the bucket comes from `config-yaml`; `prompts_s3_prefix` defaults to `prompts/`). The weekday prompt is required (boot fails loud if missing); the weekend prompt is optional (falls back to the weekday prompt). Prompts live in S3 rather than SSM because SSM Advanced-tier parameters cap at 8,192 chars and a customized prompt can exceed that.
   - Override the SSM region with `MORNING_SIGNAL_SSM_REGION` (default `us-east-1`).
 
 If neither is set, the script behaves as the local CLI — reads config + all prompts from disk, uses the default boto3 credential chain.
@@ -231,25 +231,15 @@ unless you want PR-reviewed prompt changes.
 - Generation-mode knobs — see below
 - Telegram notification creds (optional)
 
-### Generation modes
+### Customizing the script
 
-Two optional modes layer on top of the default single-script behavior, both
-config-driven:
-
-- **`public_topics_mode`** (default `false`) — load `prompt_public.md`, a
-  10-topic catalog, and inject a deterministic rotating subset of topics per
-  edition instead of the personal `prompt.md` / `prompt_weekend.md`. See
-  `src/morning_signal/topic_rotation.py` for the rotation invariants.
-- **`generation_mode`** (`monolithic` default, or `segmented`) — `monolithic`
-  covers all active topics in one Claude call (cheapest). `segmented` makes one
-  independent Claude call + TTS render per topic and stitches them together —
-  more expensive, but each topic is generated once and is cacheable/reusable in
-  a multi-tenant setting. Only takes effect when `public_topics_mode` is on.
-- **Episode length guarantee** — in segmented mode, `episode_max_chars` (default
-  `9000` ≈ 10 min) is a *hard* ceiling: the per-segment char budget is split
-  across topics and a circuit breaker truncates any overrun at a word boundary
-  *before* TTS, so the stitched episode is guaranteed under the cap (and TTS
-  cost is bounded) regardless of how loosely the model honors `segment_word_target`.
+The episode content is entirely driven by your prompt — there's no fixed topic
+list or built-in format. Edit `prompt.md` (and `prompt_weekend.md` for
+weekend/holiday editions) to define the voice, sections, length, and subject
+matter you want. The `src/morning_signal/data/prompt-*` starters
+(markets-only, tech-only, generic-news, local-news, blank) are ready-made
+variants to copy from. Whatever your prompt asks for, the engine makes a single
+Claude call with web search and renders the result to audio.
 
 ## Cost
 
@@ -265,8 +255,7 @@ cache-create tokens). Rough per-episode figures from production telemetry:
 | **Total** | **~$0.55–0.70** | **~$0.17** |
 
 The biggest lever is the model choice (`claude_model`) and the per-episode
-search ceiling (`web_search_max_uses`, or `segment_search_max_uses` in segmented
-mode) — not the TTS engine. Run `analyze_searches.py` over a few days of
+search ceiling (`web_search_max_uses`) — not the TTS engine. Run `analyze_searches.py` over a few days of
 `episodes/*.searches.jsonl` telemetry to find frequently-repeated queries worth
 replacing with curated sources. Add an always-on EC2 t3.micro (~$8/month) if you
 don't already have a host; serverless options (Lambda + EventBridge, Fly

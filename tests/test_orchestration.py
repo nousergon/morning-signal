@@ -259,76 +259,22 @@ def test_generate_script_web_search_max_uses_is_configurable(fresh_ge_module, tm
     assert tool["max_uses"] == 5
 
 
-def test_generate_script_public_topics_mode_injects_active_topics(
-    fresh_ge_module, tmp_path,
-):
-    """When ``public_topics_mode: true``, generate_script must:
-
-    1. Load ``prompt_public.md`` (not ``prompt.md``).
-    2. Compute the 5 active topics (3 fixed + 2 rotating wildcards) from
-       (date, edition) and inject them into the dynamic user message
-       with the "cover only these" instruction.
-
-    Locks down the soak-time wiring: a regression that loads the wrong
-    prompt or silently drops the topics list would otherwise pass CI
-    (the smoke tests only run live API against the canonical prompt).
-    """
-    public_path = tmp_path / "p_public.md"
-    public_path.write_text("# public catalog with all 10 topics inline")
-
-    anth_mock, client = _make_anthropic_mock("script body")
-    with patch.dict(sys.modules, {"anthropic": anth_mock}), \
-         patch.object(_config, "PROMPT_PUBLIC_FILE", public_path):
-        fresh_ge_module.generate_script(
-            {
-                "claude_model": "claude-haiku-4-5",
-                "max_tokens": 100,
-                "web_search_max_uses": 5,
-                "public_topics_mode": True,
-            },
-            "2026-05-28",  # epoch date = idx 0 (AM) → (World, Music)
-            "am",
-        )
-
-    _, kwargs = client.messages.create.call_args
-    # System prompt is the public catalog, not the personal one.
-    system_block = kwargs["system"]
-    assert "public catalog with all 10 topics" in system_block[0]["text"]
-    # User message carries the active-topics directive with the 5
-    # topics for AM 2026-05-28 (idx 0).
-    user_content = kwargs["messages"][0]["content"]
-    assert "Active topics for this edition" in user_content
-    for topic in [
-        "Markets & Economy", "Politics", "Technology",  # fixed
-        "World", "Music",                                 # idx 0 wildcards
-    ]:
-        assert topic in user_content, f"missing topic {topic!r}"
-    # cover-only instruction must reach the model
-    assert "cover only these" in user_content
-
-
-def test_generate_script_public_mode_disabled_loads_personal_prompt(
-    fresh_ge_module, tmp_path,
-):
-    """When the flag is absent or false, the public-topics path is
-    fully bypassed: personal prompt loads, no topics line in user msg."""
+def test_generate_script_loads_personal_prompt(fresh_ge_module, tmp_path):
+    """generate_script loads the user's ``prompt.md`` as the system block
+    and injects no topic directive into the dynamic user message."""
     personal_path = tmp_path / "p.md"
     personal_path.write_text("# personal prompt body")
-    public_path = tmp_path / "p_public.md"
-    public_path.write_text("# public catalog")
 
     anth_mock, client = _make_anthropic_mock("script body")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
-         patch.object(_config, "PROMPT_FILE", personal_path), \
-         patch.object(_config, "PROMPT_PUBLIC_FILE", public_path):
+         patch.object(_config, "PROMPT_FILE", personal_path):
         fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1},  # no public_topics_mode key
+            {"claude_model": "x", "max_tokens": 1},
             "2026-05-28", "am",
         )
 
     _, kwargs = client.messages.create.call_args
     assert "personal prompt body" in kwargs["system"][0]["text"]
-    assert "public catalog" not in kwargs["system"][0]["text"]
     user_content = kwargs["messages"][0]["content"]
     assert "Active topics" not in user_content
 
@@ -536,83 +482,6 @@ def test_main_full_pipeline_script_only(
     meta = json.loads((tmp_episodes_dir / "2026-05-14-pm.json").read_text())
     assert meta["edition"] == "pm"
     assert meta["audio_file"] is None
-
-
-@mock_aws
-def test_main_segmented_mode_stitches_per_topic_segments(
-    fresh_ge_module, aws_env, tmp_episodes_dir, tmp_scripts_dir,
-    sample_config, monkeypatch, tmp_path
-):
-    """Segmented public-topics mode: per-topic generation feeds the stitch
-    path, the saved script carries the intro + per-topic sections, and the
-    episode MP3 is assembled from the segments."""
-    cfg_dict = {**sample_config, "public_topics_mode": True, "generation_mode": "segmented"}
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text(json.dumps(cfg_dict))
-    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
-
-    monkeypatch.setattr(
-        fresh_ge_module, "generate_segments",
-        lambda config, date, ed: [("Markets & Economy", "Markets copy."), ("Politics", "Politics copy.")],
-    )
-    stitched = {}
-
-    def fake_seg_synth(scripts, out, config):
-        stitched["scripts"] = scripts
-        out.write_bytes(b"AUDIO")
-
-    monkeypatch.setattr(fresh_ge_module, "synthesize_segments", fake_seg_synth)
-    monkeypatch.setattr(fresh_ge_module, "publish_to_s3", lambda *a, **k: None)
-
-    monkeypatch.setattr(sys, "argv", ["generate_episode.py", "--date", "2026-05-14", "--edition", "am"])
-    fresh_ge_module.main()
-
-    saved = (tmp_scripts_dir / "2026-05-14-am.md").read_text()
-    assert "Welcome to Morning Signal." in saved
-    assert "Today: Markets & Economy, Politics." in saved
-    assert "## Markets & Economy" in saved and "## Politics" in saved
-
-    # The stitch received [intro, segment1, segment2] in order.
-    assert stitched["scripts"][0].startswith("Welcome to Morning Signal.")
-    assert stitched["scripts"][1:] == ["Markets copy.", "Politics copy."]
-    assert (tmp_episodes_dir / "2026-05-14-am.mp3").exists()
-
-
-@mock_aws
-def test_main_segmented_mode_appends_freeform_segment(
-    fresh_ge_module, aws_env, tmp_episodes_dir, tmp_scripts_dir,
-    sample_config, monkeypatch, tmp_path
-):
-    """When a freeform topic is configured, its segment is appended last and
-    appears in the intro rundown + stitch."""
-    cfg_dict = {**sample_config, "public_topics_mode": True, "generation_mode": "segmented"}
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text(json.dumps(cfg_dict))
-    monkeypatch.setattr(_config, "CONFIG_FILE", cfg)
-
-    monkeypatch.setattr(
-        fresh_ge_module, "generate_segments",
-        lambda config, date, ed: [("Markets & Economy", "Markets copy.")],
-    )
-    monkeypatch.setattr(
-        fresh_ge_module, "generate_freeform_segment",
-        lambda config, date, ed: ("My Custom Topic", "Freeform copy."),
-    )
-    stitched = {}
-    monkeypatch.setattr(
-        fresh_ge_module, "synthesize_segments",
-        lambda scripts, out, config: (stitched.update(scripts=scripts), out.write_bytes(b"AUDIO")),
-    )
-    monkeypatch.setattr(fresh_ge_module, "publish_to_s3", lambda *a, **k: None)
-
-    monkeypatch.setattr(sys, "argv", ["generate_episode.py", "--date", "2026-05-14", "--edition", "am"])
-    fresh_ge_module.main()
-
-    saved = (tmp_scripts_dir / "2026-05-14-am.md").read_text()
-    assert "Today: Markets & Economy, My Custom Topic." in saved
-    assert "## My Custom Topic" in saved
-    # freeform is the last stitched segment
-    assert stitched["scripts"][-1] == "Freeform copy."
 
 
 @mock_aws

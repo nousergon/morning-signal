@@ -48,10 +48,9 @@ dependencies = [
     # see alpha-engine-lib #80). Consumed by ``src/morning_signal/claude.py``
     # + ``tests/live_api_smoke.py`` for the L242 chokepoint swap.
     # 0.40.1 makes ``PriceTable.get`` accept the dated snapshot form
-    # (``claude-haiku-4-5-20251001``) the Anthropic SDK returns in
-    # ``Message.model`` — required for the public-topics-mode Haiku path
-    # to record cost telemetry without raising ``PriceCardLookupError``
-    # (see alpha-engine-lib #84).
+    # (e.g. ``claude-haiku-4-5-20251001``) the Anthropic SDK returns in
+    # ``Message.model`` — required so cost telemetry records without
+    # raising ``PriceCardLookupError`` (see alpha-engine-lib #84).
     "alpha-engine-lib>=0.40.1,<0.46",
 ]
 
