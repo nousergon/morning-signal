@@ -51,7 +51,7 @@ dependencies = [
     # (e.g. ``claude-haiku-4-5-20251001``) the Anthropic SDK returns in
     # ``Message.model`` — required so cost telemetry records without
     # raising ``PriceCardLookupError`` (see alpha-engine-lib #84).
-    "alpha-engine-lib>=0.40.1,<0.46",
+    "alpha-engine-lib>=0.40.1,<0.60",
 ]
 
 [project.optional-dependencies]
