@@ -16,6 +16,7 @@ from alpha_engine_lib.trading_calendar import is_trading_day
 from morning_signal import config as _config
 from morning_signal.config import load_prompt
 from morning_signal.cost_telemetry import record_call_cost
+from morning_signal.news_context import load_news_context
 from morning_signal.search_telemetry import record_searches
 
 log = logging.getLogger("morning-signal")
@@ -82,9 +83,20 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
         build_web_search_tool(max_uses=config.get("web_search_max_uses", 20))
     ]
 
+    # Optional pre-fetched news context (config-gated, default OFF; fully
+    # fail-soft → "" when disabled / unavailable). When non-empty it is
+    # injected BETWEEN the edition sentence and the generate-instruction so
+    # the model treats the supplied items as the source for those topics and
+    # web-searches only the rest. The canonical-opener instruction stays at
+    # the END of user_content, unchanged.
+    news_block = load_news_context(config)
+    news_segment = f"{news_block}\n\n" if news_block else ""
+
     user_content = (
         f"Today is {friendly_date}. This is the {edition_label} edition "
-        f"of Morning Signal. Generate today's "
+        f"of Morning Signal.\n\n"
+        f"{news_segment}"
+        f"Generate today's "
         f"{edition_label.lower()} episode per the system prompt, respecting "
         f"the News Window for this edition (only news/events since the "
         f"prior edition).\n\n"
