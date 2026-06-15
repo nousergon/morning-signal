@@ -10,10 +10,10 @@ from pathlib import Path
 
 from morning_signal import aws as _aws
 from morning_signal import config as _config
-from morning_signal.claude import generate_freeform_segment, generate_script, generate_segments
+from morning_signal.claude import generate_script
 from morning_signal.notify import make_doctor, notify_success
 from morning_signal.publish import publish_to_s3
-from morning_signal.tts import synthesize, synthesize_segments
+from morning_signal.tts import synthesize
 
 log = logging.getLogger("morning-signal")
 
@@ -88,11 +88,11 @@ def _default_date() -> str:
 # ``__all__`` so static analyzers (CodeQL's py/unused-import, etc.)
 # treat them as intentional re-exports rather than dead imports.
 from morning_signal.aws import _aws_client, _load_runner_session, _maybe_load_from_ssm  # noqa: E402,F401
-from morning_signal.claude import EDITION_LABELS, generate_freeform_segment, generate_script, generate_segments, is_non_trading_day, opening_line  # noqa: E402,F401
+from morning_signal.claude import EDITION_LABELS, generate_script, is_non_trading_day, opening_line  # noqa: E402,F401
 from morning_signal.config import load_config, load_prompt  # noqa: E402,F401
 from morning_signal.notify import make_doctor, notify_success  # noqa: E402,F401
 from morning_signal.publish import publish_to_s3  # noqa: E402,F401
-from morning_signal.tts import _adjust_speed, _chunk_text, _concat_mp3s, synthesize, synthesize_segments, tts_google, tts_polly  # noqa: E402,F401
+from morning_signal.tts import _adjust_speed, _chunk_text, _concat_mp3s, synthesize, tts_google, tts_polly  # noqa: E402,F401
 
 __all__ = [
     "EDITION_LABELS",
@@ -107,9 +107,7 @@ __all__ = [
     "_load_runner_session",
     "_make_progress",
     "_maybe_load_from_ssm",
-    "generate_freeform_segment",
     "generate_script",
-    "generate_segments",
     "is_non_trading_day",
     "load_config",
     "load_prompt",
@@ -121,7 +119,6 @@ __all__ = [
     "save_metadata",
     "save_script",
     "synthesize",
-    "synthesize_segments",
     "tts_google",
     "tts_polly",
 ]
@@ -136,7 +133,6 @@ _FORWARDED_ATTRS = {
     "CONFIG_FILE": ("config", "CONFIG_FILE"),
     "PROMPT_FILE": ("config", "PROMPT_FILE"),
     "PROMPT_WEEKEND_FILE": ("config", "PROMPT_WEEKEND_FILE"),
-    "PROMPT_PUBLIC_FILE": ("config", "PROMPT_PUBLIC_FILE"),
     "EPISODES_DIR": ("config", "EPISODES_DIR"),
     "SCRIPTS_DIR": ("config", "SCRIPTS_DIR"),
     "FEED_FILE": ("config", "FEED_FILE"),
@@ -249,39 +245,15 @@ def main():
         with guard, progress:
             phase = progress.add_task("[bold blue]Initializing", total=None)
             if not args.publish_only:
-                # Segmented (catalog-stitch) mode is a public-topics concept:
-                # one independent ~400-word Claude call per topic, then stitch.
-                # Falls back to monolithic for any non-public edition.
-                segmented = config.get("generation_mode", "monolithic") == "segmented" \
-                    and config.get("public_topics_mode", False)
                 progress.update(phase, description="[bold blue]Generating script (Claude + web search)")
-                seg_scripts: list[str] | None = None
-                if segmented:
-                    segments = generate_segments(config, args.date, args.edition)
-                    # Optional user freeform topic — char-budget-capped (the
-                    # only per-user-controlled surface). Appended last.
-                    freeform = generate_freeform_segment(config, args.date, args.edition)
-                    if freeform is not None:
-                        segments = segments + [freeform]
-                    weekend = is_non_trading_day(args.date)
-                    opener = opening_line(args.edition, weekend)
-                    topic_names = [t for t, _ in segments]
-                    intro = f"{opener} Today: {', '.join(topic_names)}."
-                    seg_scripts = [intro] + [txt for _, txt in segments]
-                    script = intro + "\n\n" + "\n\n".join(f"## {t}\n\n{txt}" for t, txt in segments)
-                else:
-                    script = generate_script(config, args.date, args.edition)
+                script = generate_script(config, args.date, args.edition)
                 script_path = save_script(script, args.date, args.edition)
 
                 if not args.script_only:
                     _engine = config.get("tts", {}).get("engine", "polly")
-                    _mode = "segmented" if segmented else "monolithic"
-                    progress.update(phase, description=f"[bold blue]Synthesizing audio ({_engine}, {_mode})")
+                    progress.update(phase, description=f"[bold blue]Synthesizing audio ({_engine})")
                     audio_path = _config.EPISODES_DIR / f"{_episode_stem(args.date, args.edition)}.mp3"
-                    if seg_scripts is not None:
-                        synthesize_segments(seg_scripts, audio_path, config)
-                    else:
-                        synthesize(script, audio_path, config)
+                    synthesize(script, audio_path, config)
                     fresh_uploads.add(audio_path.name)
 
                 save_metadata(args.date, args.edition, script_path, audio_path)

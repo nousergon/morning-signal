@@ -10,13 +10,12 @@ Two production-mode hooks:
   read the tmpdir copies.
 
 Why the split. Prompts moved off SSM 2026-05-27 because SSM Advanced-tier
-parameters are capped at 8,192 chars, and `prompt_public.md` (PR alpha-engine-
-config #336) is larger. S3 has no comparable size cap and the morning-signal-
-runner-role already holds `s3:GetObject` on the bucket. SSM keeps small
-structured config (config-yaml) + secrets (anthropic-api-key, telegram creds)
-where the SecureString primitive is the right home; S3 keeps content whose
-size is a function of the product. See `feedback_sota_institutional_default
-_no_shortcuts`.
+parameters are capped at 8,192 chars and a customized prompt can exceed that.
+S3 has no comparable size cap and the morning-signal-runner-role already holds
+`s3:GetObject` on the bucket. SSM keeps small structured config (config-yaml) +
+secrets (anthropic-api-key, telegram creds) where the SecureString primitive is
+the right home; S3 keeps content whose size is a function of the product. See
+`feedback_sota_institutional_default_no_shortcuts`.
 
 When neither MORNING_SIGNAL_USE_SSM nor _RUNNER_ROLE_ARN is set, behaves as a
 vanilla local CLI: default boto3 credential chain, files read from disk per
@@ -132,7 +131,7 @@ def _maybe_load_from_ssm() -> None:
 
     def fetch_s3_optional(key: str) -> Optional[str]:
         """S3 read that tolerates NoSuchKey — for prompts whose absence
-        is acceptable per-install (weekend / public_mode rollout window)."""
+        is acceptable per-install (e.g. an install with no weekend prompt)."""
         try:
             return fetch_s3(key)
         except Exception as e:
@@ -166,20 +165,6 @@ def _maybe_load_from_ssm() -> None:
             "weekday prompt until ``./sync.sh`` is run"
         )
         _config.PROMPT_WEEKEND_FILE = prompt_path
-
-    # Public-topics prompt is optional in S3 — only loaded when
-    # ``public_topics_mode: true`` in config.yaml. When the soak is off
-    # (the default) the object can be absent without warning. When the
-    # operator flips the soak on but the object is missing, ``load_prompt``
-    # hard-fails loudly at episode generation time per the existing
-    # "Prompt not found" path — that's the right surface (fail at the
-    # call site, not silently fall back to the personal prompt).
-    prompt_public_path = tmpdir / "prompt_public.md"
-    public_text = fetch_s3_optional(f"{prompts_prefix}prompt_public.md")
-    if public_text is not None:
-        prompt_public_path.write_text(public_text)
-        prompt_public_path.chmod(0o600)
-        _config.PROMPT_PUBLIC_FILE = prompt_public_path
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         os.environ["ANTHROPIC_API_KEY"] = fetch("/morning-signal/anthropic-api-key")

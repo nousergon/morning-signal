@@ -30,11 +30,10 @@ def canary_module(monkeypatch, tmp_path: Path):
     """Reload ``canary`` after wiring config + prompt + env to tmp paths.
 
     The fixture writes a minimal ``config.yaml`` + ``prompt.md`` /
-    ``prompt_weekend.md`` / ``prompt_public.md`` triple, points
-    ``morning_signal.config`` module-level paths at them, sets
-    ``ANTHROPIC_API_KEY``, and unsets ``MORNING_SIGNAL_USE_SSM`` so the
-    SSM bootstrap is a no-op (the live-SSM path is exercised in
-    ``tests/test_aws_paths.py``).
+    ``prompt_weekend.md`` pair, points ``morning_signal.config``
+    module-level paths at them, sets ``ANTHROPIC_API_KEY``, and unsets
+    ``MORNING_SIGNAL_USE_SSM`` so the SSM bootstrap is a no-op (the
+    live-SSM path is exercised in ``tests/test_aws_paths.py``).
     """
     from morning_signal import config as _config_mod
 
@@ -44,19 +43,14 @@ def canary_module(monkeypatch, tmp_path: Path):
         "claude_model: claude-sonnet-4-6\n"
         "max_tokens: 4096\n"
         "web_search_max_uses: 20\n"
-        "public_topics_mode: false\n"
     )
     (tmp_path / "prompt.md").write_text("Weekday system prompt.\n")
     (tmp_path / "prompt_weekend.md").write_text("Weekend system prompt.\n")
-    (tmp_path / "prompt_public.md").write_text("Public-topics system prompt.\n")
 
     monkeypatch.setattr(_config_mod, "CONFIG_FILE", cfg_path)
     monkeypatch.setattr(_config_mod, "PROMPT_FILE", tmp_path / "prompt.md")
     monkeypatch.setattr(
         _config_mod, "PROMPT_WEEKEND_FILE", tmp_path / "prompt_weekend.md"
-    )
-    monkeypatch.setattr(
-        _config_mod, "PROMPT_PUBLIC_FILE", tmp_path / "prompt_public.md"
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc")
     monkeypatch.delenv("MORNING_SIGNAL_USE_SSM", raising=False)
@@ -86,7 +80,6 @@ def test_canary_builds_production_shape_payload(canary_module):
         "claude_model": "claude-sonnet-4-6",
         "max_tokens": 4096,
         "web_search_max_uses": 20,
-        "public_topics_mode": False,
     }
     payload = canary_module._build_canary_payload(cfg, "2026-05-28", "am")
 

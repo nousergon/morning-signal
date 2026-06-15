@@ -5,10 +5,9 @@
 # Config with real values (use config.yaml.example as template)
 config.yaml
 
-# LLM prompts (proprietary)
+# LLM prompts (personal / customized)
 prompt.md
 prompt_weekend.md
-prompt_public.md
 
 # Generated content
 episodes/

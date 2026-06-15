@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Public-topics mode and segmented generation.** Dropped the
+  `public_topics_mode` / `generation_mode: segmented` machinery — the
+  `prompt_public.md` 10-topic catalog, the `topic_rotation.py` wildcard
+  rotation, per-topic `generate_segments` / `generate_freeform_segment`
+  generation, `tts.synthesize_segments`, and the `enforce_char_budget`
+  circuit-breaker. These existed to dogfood a hosted multi-tenant
+  "topic catalog" product that is not part of this open-source project.
+  The engine now has a single, fully prompt-driven generation path:
+  customize `prompt.md` (and `prompt_weekend.md`) to define your episode's
+  content and format — see the `src/morning_signal/data/prompt-*` starters.
+  Removed config keys (now ignored if present): `public_topics_mode`,
+  `generation_mode`, `segment_search_max_uses`, `segment_word_target`,
+  `episode_max_chars`, `freeform_topic`, `freeform_max_chars`.
+
 ## [0.1.3] — 2026-06-10
 
 ### Added

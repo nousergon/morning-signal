@@ -7,8 +7,8 @@ that CI's paths-filter cannot see: out-of-band edits to the LIVE
 production prompt + config that bypass the PR flow.
 
 Examples this catches that CI does not:
-  - operator edits ``prompt_public.md`` directly on the host then
-    ``git commit --no-verify`` push that misses CI;
+  - operator edits ``prompt.md`` / ``prompt_weekend.md`` directly on the
+    host then ``git commit --no-verify`` push that misses CI;
   - operator edits the SSM ``/morning-signal/config-yaml`` parameter or
     the S3-hosted prompt object (per
     ``reference_morning_signal_prompts_via_s3_260527``) without a PR;
@@ -27,11 +27,10 @@ Exit codes:
   1 — validation failure, HTTP 4xx (the canonical regression class),
       missing API key, or any unexpected error.
 
-ROADMAP L380 / GATE_REGISTRY ``L380-dashboard-canary-defense-in-depth``.
-This is Phase A — the script itself. Phase B (``ExecStartPre=`` wiring
-into ``morning-signal.service`` + EC2 deploy) is gated on the
-public-topics 7-day soak terminating (~2026-06-03) so a spurious
-canary failure cannot contaminate soak data.
+This is Phase A — the script itself. Phase B is wiring it into the
+``morning-signal.service`` unit as an ``ExecStartPre=`` so a payload-shape
+regression blocks the service from starting rather than failing at the next
+scheduled run.
 """
 
 from __future__ import annotations
@@ -59,7 +58,6 @@ from morning_signal.claude import (  # noqa: E402
     opening_line,
 )
 from morning_signal.config import load_config, load_prompt  # noqa: E402
-from morning_signal.topic_rotation import active_topics_for_edition  # noqa: E402
 
 log = logging.getLogger("morning-signal.canary")
 logging.basicConfig(
@@ -83,8 +81,7 @@ def _build_canary_payload(
     are enforced at lib level identically.
     """
     weekend = is_non_trading_day(date_str)
-    public_mode = bool(config.get("public_topics_mode", False))
-    prompt_text = load_prompt(weekend=weekend, public_mode=public_mode)
+    prompt_text = load_prompt(weekend=weekend)
 
     dt = _dt.datetime.strptime(date_str, "%Y-%m-%d")
     friendly_date = dt.strftime("%A, %B %-d, %Y")
@@ -95,18 +92,9 @@ def _build_canary_payload(
         build_web_search_tool(max_uses=config.get("web_search_max_uses", 20))
     ]
 
-    if public_mode:
-        topics = active_topics_for_edition(date_str, edition)
-        topics_line = (
-            f" Active topics for this edition (cover only these, in this "
-            f"order, ~400 words each): {', '.join(topics)}."
-        )
-    else:
-        topics_line = ""
-
     user_content = (
         f"Today is {friendly_date}. This is the {edition_label} edition "
-        f"of Morning Signal.{topics_line} Generate today's "
+        f"of Morning Signal. Generate today's "
         f"{edition_label.lower()} episode per the system prompt, respecting "
         f"the News Window for this edition (only news/events since the "
         f"prior edition).\n\n"
@@ -194,10 +182,9 @@ def main() -> int:
 
     log.info(
         "canary: dispatching max_tokens=1 smoke to %s (edition=%s, "
-        "public_mode=%s, config=%s)",
+        "config=%s)",
         model,
         edition,
-        bool(cfg.get("public_topics_mode", False)),
         _config.CONFIG_FILE,
     )
 

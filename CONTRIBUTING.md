@@ -39,7 +39,7 @@ These are deliberately left for contributors — the maintainer runs the cloud p
 ## Scope & boundaries
 
 - **This repo is the MIT-licensed generation engine.** Multi-tenant / billing / per-user / hosted-service code is **out of scope** here — it belongs in a separate private service layer, not the public package. PRs that add that kind of logic will be redirected.
-- **Never commit secrets or proprietary prompt content.** The real `prompt.md` / `prompt_weekend.md` / `prompt_public.md` are gitignored — contribute against `prompt.example.md` and the `.example` config. `.env`, `config.yaml`, and AWS/Anthropic/GCP credentials must never be committed.
+- **Never commit secrets or personal prompt content.** Your real `prompt.md` / `prompt_weekend.md` are gitignored — contribute against `prompt.example.md` and the `.example` config. `.env`, `config.yaml`, and AWS/Anthropic/GCP credentials must never be committed.
 
 ## Style & requirements
 
