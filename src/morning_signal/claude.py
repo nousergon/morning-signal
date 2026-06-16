@@ -124,12 +124,37 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
-    record_searches(
+    n_searches = record_searches(
         msg=response,
         date_str=date_str,
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
+
+    # Fail-loud guard: an edition that ran fewer than ``min_web_searches``
+    # web searches is almost certainly model-confabulated rather than
+    # grounded in live news — the failure mode that shipped a fully
+    # hallucinated, politics-free episode on 2026-06-16 when the
+    # pre-fetched news block told the model it could skip searching.
+    # Raise BEFORE any TTS/publish so the silent-failure watchdog catches
+    # the absent fresh episode instead of a bad one going live. OSS users
+    # with a prompt that legitimately needs no live search can set
+    # ``min_web_searches: 0`` to opt out.
+    min_web_searches = config.get("min_web_searches", 1)
+    if n_searches < min_web_searches:
+        log.error(
+            f"ABORT: {edition_label} edition for {friendly_date} ran only "
+            f"{n_searches} web search(es) (floor is {min_web_searches}). "
+            f"A zero/low-search edition is almost certainly hallucinated "
+            f"rather than grounded in live news — refusing to publish. "
+            f"Check the web_search tool, the model, and any pre-fetched "
+            f"news-context framing. To intentionally allow this, set "
+            f"min_web_searches in config."
+        )
+        raise RuntimeError(
+            f"web_search floor not met: {n_searches} < {min_web_searches} "
+            f"for {date_str}-{edition} — aborting before publish"
+        )
 
     script = _final_text_after_last_tool(response.content)
 
