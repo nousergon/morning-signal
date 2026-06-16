@@ -2,8 +2,15 @@
 
 When ``news_context.enabled`` is true in config, fetch a pre-built news
 digest JSON from S3 and format it into a markdown block that
-``claude.generate_script`` injects into the user message. The model then
-uses the supplied items for those topics instead of web-searching them.
+``claude.generate_script`` injects into the user message. The block is
+framed as a SUPPLEMENTARY starting reference — leads to verify — not a
+replacement for web search: the model is still required to web-search
+every segment. An earlier framing told the model "do NOT web-search
+these topics", which made it skip search entirely (incl. segments the
+digest never covers, e.g. the political pulse) and hallucinate a whole
+episode with ``web_search_requests == 0`` (2026-06-16 incident). The
+companion guard in ``claude.generate_script`` now fails loud on a
+zero-search edition so that failure mode can never publish silently.
 
 Default-OFF + fully fail-soft: an OSS user without the digest (the
 default) sees ZERO behavior change — the loader returns ``""`` and
@@ -111,12 +118,21 @@ def _format_digest(digest: dict) -> str:
         return ""
 
     header = (
-        "PRE-FETCHED NEWS (use the items below for these topics; do NOT "
-        "web-search them):"
+        "PRE-FETCHED NEWS — SUPPLEMENTARY STARTING REFERENCE ONLY. The "
+        "items below are a partial, possibly-stale head-start for SOME "
+        "topics. They do NOT replace web search. You MUST still run web "
+        "search for EVERY segment in the system prompt — to confirm, "
+        "update, and fill gaps. This digest covers only a subset of "
+        "segments (e.g. it does NOT include the political / Truth Social / "
+        "MAGA pulse segments — those are absent here and MUST be "
+        "web-searched). Treat these items as leads to verify, never as the "
+        "final word:"
     )
     footer = (
-        "For any segment NOT covered by the pre-fetched news above, use "
-        "web search as normal."
+        "Reminder: the items above are supplementary leads only. Run web "
+        "search for every segment, including the ones listed above, and "
+        "always prefer fresh web-search results over a pre-fetched item "
+        "when they conflict."
     )
     return f"{header}\n\n" + "\n\n".join(blocks) + f"\n\n{footer}"
 

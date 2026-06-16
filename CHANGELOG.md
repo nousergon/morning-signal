@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Fail-loud web-search floor guard.** `generate_script` now aborts
+  before any TTS/publish when an edition runs fewer than
+  `min_web_searches` web searches (default `1`). A zero/low-search
+  edition is almost always model-confabulated rather than grounded in
+  live news; raising lets the silent-failure watchdog catch the absent
+  fresh episode instead of a hallucinated one going live. OSS users with
+  a prompt that legitimately needs no live search can set
+  `min_web_searches: 0` to opt out.
+
+### Changed
+
+- **Pre-fetched news context reframed as supplementary.** The injected
+  news block previously instructed the model to "use the items below …
+  do NOT web-search them", which made the model skip web search entirely
+  — including segments the digest never covers (e.g. the political /
+  Truth Social pulse) — and hallucinate a full episode with
+  `web_search_requests == 0` (2026-06-16 incident). The block is now
+  framed as a supplementary starting reference: the model is told it MUST
+  still web-search every segment, that the digest omits the political
+  segments, and to prefer fresh search results over a pre-fetched item on
+  conflict.
+
 ### Removed
 
 - **Public-topics mode and segmented generation.** Dropped the

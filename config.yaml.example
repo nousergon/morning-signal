@@ -49,12 +49,22 @@ max_tokens: 8192
 # ceiling, not a throttle. Omit to use the in-code default of 20.
 web_search_max_uses: 20
 
+# Minimum web searches an edition must perform or generation ABORTS before
+# publish (fail-loud). A zero/low-search edition is almost always
+# model-confabulated rather than grounded in live news — this guard stops a
+# hallucinated episode from going live silently (2026-06-16 incident: a
+# pre-fetched news block told the model it could skip search, so it ran 0
+# searches and fabricated the whole episode). Default 1. Set to 0 only if
+# your prompt legitimately needs no live web search.
+min_web_searches: 1
+
 # ── Pre-fetched News Context (optional, default OFF) ────────────────────────
 # When enabled, morning-signal reads a pre-built news digest JSON from S3 and
-# injects it into the Claude prompt so the model uses those pre-fetched items
-# for the covered topics instead of web-searching them (it still web-searches
-# anything NOT covered). Leave disabled (the default) to keep the standard
-# web-search-only behavior — when off, this block has zero effect.
+# injects it into the Claude prompt as a SUPPLEMENTARY starting reference —
+# leads for the model to verify. It does NOT suppress web search: the model is
+# still instructed to web-search every segment (and the min_web_searches guard
+# above enforces that it does). Leave disabled (the default) to keep the
+# standard web-search-only behavior — when off, this block has zero effect.
 #
 # The digest is a JSON object of the shape
 #   {"schema_version": 1, "date": "...", "sections": {"<name>": [<item>, ...]}}

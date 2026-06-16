@@ -107,9 +107,15 @@ def test_happy_path_formats_sections(aws_env):
     }
     out = nc.load_news_context(cfg)
 
-    # Header + per-topic instruction
+    # Header frames the digest as SUPPLEMENTARY and mandates web search —
+    # it must NOT tell the model to skip searching (the 2026-06-16 regression
+    # that produced a zero-search hallucinated episode).
     assert out.startswith("PRE-FETCHED NEWS")
-    assert "do NOT web-search them" in out
+    assert "SUPPLEMENTARY" in out
+    assert "MUST still run web search" in out
+    assert "do NOT web-search" not in out
+    # The header explicitly flags that political segments are absent + must be searched.
+    assert "political" in out.lower()
     # Generic section headings (titlecased from keys)
     assert "## Portfolio" in out
     assert "## Macro" in out
@@ -118,8 +124,8 @@ def test_happy_path_formats_sections(aws_env):
     assert "- [AAPL] Apple unveils new chip (Reuters, 2026-06-14) — Faster, cooler." in out
     # No-ticker, no-published item renders cleanly (source only attribution)
     assert "- New model released (TechCrunch) — Big leap." in out
-    # Footer tells the model to web-search uncovered segments
-    assert "use web search as normal" in out
+    # Footer reinforces: supplementary leads only, search every segment.
+    assert "supplementary leads only" in out
 
 
 @mock_aws
@@ -244,7 +250,7 @@ def test_generate_script_injects_news_block_when_enabled(fresh_ge_module, tmp_pa
         _config, "PROMPT_FILE", prompt_path
     ), patch.object(_claude, "load_news_context", return_value=fake_block):
         fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
+            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0}, "2026-05-14", "am"
         )
 
     _, kwargs = client.messages.create.call_args
@@ -274,7 +280,7 @@ def test_generate_script_no_injection_when_context_empty(fresh_ge_module, tmp_pa
         _config, "PROMPT_FILE", prompt_path
     ), patch.object(_claude, "load_news_context", return_value=""):
         fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
+            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0}, "2026-05-14", "am"
         )
 
     _, kwargs = client.messages.create.call_args
