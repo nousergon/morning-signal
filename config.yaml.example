@@ -69,10 +69,17 @@ min_web_searches: 1
 # The digest is a JSON object of the shape
 #   {"schema_version": 1, "date": "...", "sections": {"<name>": [<item>, ...]}}
 # where each item has a `title` (required) plus optional `ticker`, `source`,
-# `published`, `excerpt`, `url`. Any error (missing object, bad JSON, etc.) is
-# fail-soft: a warning is logged and generation proceeds with web search.
+# `published`, `excerpt`, `url`.
+#
+# `required` (default true when enabled) makes the digest a HARD prerequisite:
+# if it is missing, malformed, STALE (its `date` != the episode's date), or
+# empty, generation ABORTS before publish — no valid fresh digest, no pod. This
+# stops a soft-failed digest from silently degrading into a pod narrated without
+# the news it was meant to carry. Set `required: false` to fall back to the
+# fail-soft behavior (warn + generate with web search only).
 news_context:
   enabled: false
+  required: true                                  # missing/stale/empty digest → abort the pod (set false for fail-soft)
   s3_bucket: ""                                   # bucket holding the digest JSON (required when enabled)
   s3_key: "data/news_digest_daily/latest.json"    # object key for the digest (default shown)
 

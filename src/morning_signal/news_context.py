@@ -12,11 +12,19 @@ episode with ``web_search_requests == 0`` (2026-06-16 incident). The
 companion guard in ``claude.generate_script`` now fails loud on a
 zero-search edition so that failure mode can never publish silently.
 
-Default-OFF + fully fail-soft: an OSS user without the digest (the
-default) sees ZERO behavior change — the loader returns ``""`` and
-generation proceeds with web search as before. Any error (feature
-disabled, missing config, S3 miss, bad JSON, malformed shape) logs a
-WARNING and returns ``""`` so the podcast never crashes on news context.
+Default-OFF: an OSS user who leaves the feature disabled (the default)
+sees ZERO behavior change — the loader returns ``""`` and generation
+proceeds with web search as before.
+
+When ENABLED, the digest is a HARD requirement by default
+(``news_context.required: true``): if it can't be loaded, is malformed,
+is **stale** (its ``date`` != the run date), or renders empty, the
+loader RAISES and episode generation aborts before publish — no valid
+fresh digest, no pod. This is deliberate: a soft-failed digest (missing
+/ empty / yesterday's) must not silently degrade into a pod narrated
+without the news it was supposed to carry. Set ``news_context.required:
+false`` to opt back into the original fail-soft behavior (WARN + ``""``
++ web-search fallback).
 
 Digest JSON contract (produced by alpha-engine-data)::
 
@@ -137,25 +145,50 @@ def _format_digest(digest: dict) -> str:
     return f"{header}\n\n" + "\n\n".join(blocks) + f"\n\n{footer}"
 
 
-def load_news_context(config: dict) -> str:
-    """Load + format the pre-fetched news digest from S3, or return "".
+def load_news_context(config: dict, run_date: str | None = None) -> str:
+    """Load + format the pre-fetched news digest from S3.
 
     Returns ``""`` immediately when the feature is disabled (the
-    default). Otherwise reads the digest JSON from S3 and renders it.
-    Any failure is fail-soft: log a WARNING and return ``""`` so episode
-    generation falls back to web search and never crashes.
+    default). When enabled, reads + renders the digest JSON from S3.
+
+    Failure posture is governed by ``news_context.required`` (default
+    ``True``): if the digest can't be loaded, isn't a JSON object, is
+    **stale** (its ``date`` != ``run_date``), or renders to nothing
+    (empty), then —
+
+      * ``required`` (the default): **raise** ``RuntimeError`` so episode
+        generation ABORTS before any TTS/publish. A pod must not be made
+        from a soft-failed news digest — no valid fresh digest, no pod.
+      * not required: log a WARNING and return ``""`` so generation
+        falls back to web search only (the original fail-soft behavior,
+        retained as an explicit opt-out for OSS users who want it).
+
+    ``run_date`` (the episode's calendar date) enables the staleness
+    check; pass ``None`` to skip it (the digest is still required to
+    exist + be non-empty when ``required``).
     """
     news_cfg = config.get("news_context") or {}
     if not news_cfg.get("enabled"):
         return ""
 
-    bucket = news_cfg.get("s3_bucket")
-    if not bucket:
+    required = news_cfg.get("required", True)
+
+    def _fail(msg: str) -> str:
+        """Raise when required, else WARN + return "" (fail-soft opt-out)."""
+        if required:
+            raise RuntimeError(
+                f"news_context required but {msg} — refusing to generate a "
+                f"pod from a soft-failed news digest (set "
+                f"news_context.required: false to fall back to web search)"
+            )
         log.warning(
-            "news_context.enabled is true but news_context.s3_bucket is "
-            "unset; skipping pre-fetched news context"
+            f"news_context: {msg}; proceeding with web search only"
         )
         return ""
+
+    bucket = news_cfg.get("s3_bucket")
+    if not bucket:
+        return _fail("news_context.s3_bucket is unset")
     key = news_cfg.get("s3_key", DEFAULT_S3_KEY)
 
     try:
@@ -163,25 +196,33 @@ def load_news_context(config: dict) -> str:
         resp = s3.get_object(Bucket=bucket, Key=key)
         body = resp["Body"].read().decode("utf-8")
         digest = json.loads(body)
-    except Exception as e:  # noqa: BLE001 — fail-soft by design (see module docstring)
-        log.warning(
-            f"news_context: could not load digest from "
-            f"s3://{bucket}/{key} ({type(e).__name__}: {e}); proceeding "
-            f"with web search only"
+    except Exception as e:  # noqa: BLE001 — posture decided by _fail (required?)
+        return _fail(
+            f"could not load digest from s3://{bucket}/{key} "
+            f"({type(e).__name__}: {e})"
         )
-        return ""
 
     if not isinstance(digest, dict):
-        log.warning(
-            f"news_context: digest at s3://{bucket}/{key} is not a JSON "
-            f"object; proceeding with web search only"
-        )
-        return ""
+        return _fail(f"digest at s3://{bucket}/{key} is not a JSON object")
+
+    # Staleness: a digest left over from a prior run (today's producer
+    # failed without overwriting latest.json) is a SOFT fail — block the
+    # pod rather than narrate yesterday's news as today's.
+    if run_date is not None:
+        digest_date = digest.get("date")
+        if digest_date != run_date:
+            return _fail(
+                f"digest at s3://{bucket}/{key} is stale "
+                f"(digest date={digest_date!r}, run date={run_date!r})"
+            )
 
     block = _format_digest(digest)
-    if block:
-        log.info(
-            f"news_context: injected pre-fetched news from "
-            f"s3://{bucket}/{key}"
+    if not block:
+        return _fail(
+            f"digest at s3://{bucket}/{key} has no usable items (empty)"
         )
+
+    log.info(
+        f"news_context: injected pre-fetched news from s3://{bucket}/{key}"
+    )
     return block
