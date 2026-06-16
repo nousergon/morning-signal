@@ -89,7 +89,7 @@ def test_disabled_returns_empty_when_enabled_false():
 
 
 def test_enabled_without_bucket_fails_soft(caplog):
-    cfg = {"news_context": {"enabled": True}}
+    cfg = {"news_context": {"enabled": True, "required": False}}
     with caplog.at_level("WARNING"):
         assert nc.load_news_context(cfg) == ""
     assert any("s3_bucket is unset" in r.message for r in caplog.records)
@@ -162,7 +162,7 @@ def test_all_empty_sections_returns_empty(aws_env):
     _seed_digest("news-bucket", nc.DEFAULT_S3_KEY, digest)
     cfg = {
         "s3_region": REGION,
-        "news_context": {"enabled": True, "s3_bucket": "news-bucket"},
+        "news_context": {"enabled": True, "s3_bucket": "news-bucket", "required": False},
     }
     assert nc.load_news_context(cfg) == ""
 
@@ -180,7 +180,7 @@ def test_s3_miss_fails_soft(aws_env, caplog):
     )
     cfg = {
         "s3_region": REGION,
-        "news_context": {"enabled": True, "s3_bucket": "news-bucket"},
+        "news_context": {"enabled": True, "s3_bucket": "news-bucket", "required": False},
     }
     with caplog.at_level("WARNING"):
         assert nc.load_news_context(cfg) == ""
@@ -192,7 +192,7 @@ def test_bad_json_fails_soft(aws_env, caplog):
     _seed_digest("news-bucket", nc.DEFAULT_S3_KEY, "{not valid json")
     cfg = {
         "s3_region": REGION,
-        "news_context": {"enabled": True, "s3_bucket": "news-bucket"},
+        "news_context": {"enabled": True, "s3_bucket": "news-bucket", "required": False},
     }
     with caplog.at_level("WARNING"):
         assert nc.load_news_context(cfg) == ""
@@ -204,11 +204,92 @@ def test_missing_sections_key_fails_soft(aws_env, caplog):
     _seed_digest("news-bucket", nc.DEFAULT_S3_KEY, {"schema_version": 1})
     cfg = {
         "s3_region": REGION,
-        "news_context": {"enabled": True, "s3_bucket": "news-bucket"},
+        "news_context": {"enabled": True, "s3_bucket": "news-bucket", "required": False},
     }
     with caplog.at_level("WARNING"):
         assert nc.load_news_context(cfg) == ""
     assert any("no usable 'sections'" in r.message for r in caplog.records)
+
+
+# ── required (default) → fail-loud ────────────────────────────────────────────
+
+_FRESH_DIGEST = {
+    "schema_version": 1,
+    "date": "2026-06-16",
+    "sections": {"portfolio": [{"ticker": "AAPL", "title": "Apple news"}]},
+}
+
+
+def test_required_defaults_true_and_raises_without_bucket():
+    """Enabled with no ``required`` key defaults to strict — a config gap
+    (no bucket) raises rather than silently degrading."""
+    cfg = {"news_context": {"enabled": True}}
+    with pytest.raises(RuntimeError, match="news_context required but"):
+        nc.load_news_context(cfg)
+
+
+@mock_aws
+def test_required_raises_on_s3_miss(aws_env):
+    s3 = boto3.client("s3", region_name=REGION)
+    s3.create_bucket(
+        Bucket="news-bucket",
+        CreateBucketConfiguration={"LocationConstraint": REGION},
+    )
+    cfg = {
+        "s3_region": REGION,
+        "news_context": {"enabled": True, "s3_bucket": "news-bucket"},
+    }
+    with pytest.raises(RuntimeError, match="could not load digest"):
+        nc.load_news_context(cfg, run_date="2026-06-16")
+
+
+@mock_aws
+def test_required_raises_on_empty_digest(aws_env):
+    digest = {"date": "2026-06-16", "sections": {"portfolio": [], "macro": [], "tech": []}}
+    _seed_digest("news-bucket", nc.DEFAULT_S3_KEY, digest)
+    cfg = {
+        "s3_region": REGION,
+        "news_context": {"enabled": True, "s3_bucket": "news-bucket"},
+    }
+    with pytest.raises(RuntimeError, match="has no usable items"):
+        nc.load_news_context(cfg, run_date="2026-06-16")
+
+
+@mock_aws
+def test_required_raises_on_stale_digest(aws_env):
+    # Digest is dated 2026-06-16; the run is for 2026-06-17 → stale.
+    _seed_digest("news-bucket", nc.DEFAULT_S3_KEY, _FRESH_DIGEST)
+    cfg = {
+        "s3_region": REGION,
+        "news_context": {"enabled": True, "s3_bucket": "news-bucket"},
+    }
+    with pytest.raises(RuntimeError, match="stale"):
+        nc.load_news_context(cfg, run_date="2026-06-17")
+
+
+@mock_aws
+def test_required_passes_on_fresh_nonempty_digest(aws_env):
+    _seed_digest("news-bucket", nc.DEFAULT_S3_KEY, _FRESH_DIGEST)
+    cfg = {
+        "s3_region": REGION,
+        "news_context": {"enabled": True, "s3_bucket": "news-bucket"},
+    }
+    out = nc.load_news_context(cfg, run_date="2026-06-16")
+    assert "## Portfolio" in out
+    assert "Apple news" in out
+
+
+@mock_aws
+def test_no_run_date_skips_staleness_check(aws_env):
+    """Without a run_date the staleness gate is skipped, but presence +
+    non-empty are still required."""
+    _seed_digest("news-bucket", nc.DEFAULT_S3_KEY, _FRESH_DIGEST)
+    cfg = {
+        "s3_region": REGION,
+        "news_context": {"enabled": True, "s3_bucket": "news-bucket"},
+    }
+    out = nc.load_news_context(cfg)  # no run_date
+    assert "## Portfolio" in out
 
 
 # ── generate_script injection wiring ─────────────────────────────────────────

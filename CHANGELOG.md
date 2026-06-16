@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pre-fetched news digest is a hard prerequisite when enabled
+  (`news_context.required`, default `true`).** A soft-failed digest
+  (missing / malformed / **stale** — its `date` != the episode's date /
+  empty) now makes `load_news_context` **raise** and aborts the pod
+  before publish, instead of silently degrading into an episode narrated
+  without the news it was meant to carry. The freshness watchdog then
+  catches the absent episode. Set `news_context.required: false` to opt
+  back into the original fail-soft (warn + web-search-only) behavior.
+  `generate_script` passes the episode date so staleness can be checked.
+
 - **Fail-loud web-search floor guard.** `generate_script` now aborts
   before any TTS/publish when an edition runs fewer than
   `min_web_searches` web searches (default `1`). A zero/low-search

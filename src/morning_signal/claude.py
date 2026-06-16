@@ -83,13 +83,15 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
         build_web_search_tool(max_uses=config.get("web_search_max_uses", 20))
     ]
 
-    # Optional pre-fetched news context (config-gated, default OFF; fully
-    # fail-soft → "" when disabled / unavailable). When non-empty it is
-    # injected BETWEEN the edition sentence and the generate-instruction so
-    # the model treats the supplied items as the source for those topics and
-    # web-searches only the rest. The canonical-opener instruction stays at
-    # the END of user_content, unchanged.
-    news_block = load_news_context(config)
+    # Optional pre-fetched news context (config-gated, default OFF). When
+    # enabled it is a HARD requirement by default: load_news_context RAISES
+    # on a missing / malformed / stale / empty digest (run_date drives the
+    # staleness check), aborting the pod before publish rather than
+    # narrating yesterday's or no news. Set news_context.required: false to
+    # fall back to fail-soft. When non-empty the block is injected BETWEEN
+    # the edition sentence and the generate-instruction as a supplementary
+    # reference; the canonical-opener instruction stays at the END.
+    news_block = load_news_context(config, run_date=date_str)
     news_segment = f"{news_block}\n\n" if news_block else ""
 
     user_content = (
