@@ -172,10 +172,16 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     # ``required_search_topics`` lets the operator assert, per topic, that at
     # least ``min_matches`` searches actually targeted it. Default empty =
     # no-op (OSS-safe); the topics are declared in the operator's config
-    # alongside the prompt that defines those segments.
+    # alongside the prompt that defines those segments. A topic can be scoped
+    # to specific editions (``editions: [...]``) so a weekday-only segment does
+    # not falsely abort the "weekend" edition, which runs a different prompt
+    # with different segments and legitimately never searches it.
     required_topics = config.get("required_search_topics") or []
     if required_topics:
-        unmet = unmet_required_topics(extract_searches(response), required_topics)
+        effective_edition = "weekend" if weekend else edition
+        unmet = unmet_required_topics(
+            extract_searches(response), required_topics, edition=effective_edition
+        )
         if unmet:
             log.error(
                 f"ABORT: {edition_label} edition for {friendly_date} did not "

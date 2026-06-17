@@ -66,13 +66,21 @@ min_web_searches: 1
 # pre-fetched fallback) with no budget left, then writes it from memory. Declare
 # a topic per such segment, listing keywords any of which a search query must
 # contain; if fewer than ``min_matches`` (default 1) searches hit a topic,
-# generation ABORTS before publish. Default: none (no-op). Example for a
-# political-pulse segment sourced only from Truth Social / X:
+# generation ABORTS before publish. Default: none (no-op).
+#
+# ``editions`` (optional) scopes a topic to specific editions — useful when a
+# weekday edition has a segment (e.g. a political pulse) that the "weekend"
+# edition's prompt does not. Edition values are "am", "pm", and "weekend"
+# (non-trading days). A topic with an ``editions`` list is enforced ONLY for
+# those editions, so a weekday-only topic never falsely aborts the weekend pod.
+# Omit ``editions`` to enforce on every edition. Example for a political-pulse
+# segment sourced only from Truth Social / X, weekday editions only:
 #
 # required_search_topics:
 #   - name: "Political pulse"
 #     keywords: ["truth social", "trump", "maga"]
-#     min_matches: 1
+#     min_matches: 2
+#     editions: ["am", "pm"]    # not "weekend" — the weekend prompt has no politics
 #   - name: "Seattle local"
 #     keywords: ["seattle", "cascades"]
 #     min_matches: 1
