@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from morning_signal.search_telemetry import _extract_searches, record_searches
+from morning_signal.search_telemetry import extract_searches, record_searches
 
 
 class _Block:
@@ -71,7 +71,7 @@ def test_extracts_query_and_urls_for_each_search():
         _Block(type="text", text="...closing"),
     ])
 
-    out = _extract_searches(msg)
+    out = extract_searches(msg)
     assert len(out) == 2
     assert out[0] == {
         "query": "S&P 500 close today",
@@ -89,7 +89,7 @@ def test_extracts_query_and_urls_for_each_search():
 
 def test_returns_empty_when_no_web_search_blocks():
     msg = _Message([_Block(type="text", text="no tool use here")])
-    assert _extract_searches(msg) == []
+    assert extract_searches(msg) == []
 
 
 def test_handles_search_with_missing_result_block():
@@ -99,7 +99,7 @@ def test_handles_search_with_missing_result_block():
     msg = _Message([
         _server_tool_use(block_id="srv_1", query="orphan query"),
     ])
-    out = _extract_searches(msg)
+    out = extract_searches(msg)
     assert len(out) == 1
     assert out[0]["query"] == "orphan query"
     assert out[0]["urls"] == []
@@ -112,7 +112,7 @@ def test_handles_error_result_block():
         _server_tool_use(block_id="srv_1", query="will fail"),
         _tool_result_error(tool_use_id="srv_1", error_code="max_uses_exceeded"),
     ])
-    out = _extract_searches(msg)
+    out = extract_searches(msg)
     assert len(out) == 1
     assert out[0]["urls"] == []
     assert out[0]["error"] == "max_uses_exceeded"

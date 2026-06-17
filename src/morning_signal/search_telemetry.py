@@ -129,11 +129,6 @@ def record_searches(
     return len(searches)
 
 
-# Backwards-compatible private alias (kept so existing imports / tests that
-# reference the original private name keep working).
-_extract_searches = extract_searches
-
-
 def unmet_required_topics(
     searches: list[dict[str, Any]],
     required_topics: list[dict[str, Any]],
