@@ -7,11 +7,11 @@ import re
 import sys
 from datetime import datetime
 
-from alpha_engine_lib.anthropic_payload import (
+from morning_signal._vendor.nousergon.anthropic_payload import (
     build_messages_payload,
     build_web_search_tool,
 )
-from alpha_engine_lib.trading_calendar import is_trading_day
+from morning_signal._vendor.nousergon.trading_calendar import is_trading_day
 
 from morning_signal import config as _config
 from morning_signal.config import load_prompt
