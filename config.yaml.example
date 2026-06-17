@@ -58,6 +58,25 @@ web_search_max_uses: 20
 # your prompt legitimately needs no live web search.
 min_web_searches: 1
 
+# Per-segment search guard (optional, default none). ``min_web_searches`` above
+# only asserts the edition was grounded *somewhere* — it does NOT guarantee a
+# *specific* search-critical segment was covered. The failure mode this catches
+# (2026-06-17): with a tight ``web_search_max_uses`` budget the model spends its
+# searches on the earlier segments and reaches a no-digest segment (one with no
+# pre-fetched fallback) with no budget left, then writes it from memory. Declare
+# a topic per such segment, listing keywords any of which a search query must
+# contain; if fewer than ``min_matches`` (default 1) searches hit a topic,
+# generation ABORTS before publish. Default: none (no-op). Example for a
+# political-pulse segment sourced only from Truth Social / X:
+#
+# required_search_topics:
+#   - name: "Political pulse"
+#     keywords: ["truth social", "trump", "maga"]
+#     min_matches: 1
+#   - name: "Seattle local"
+#     keywords: ["seattle", "cascades"]
+#     min_matches: 1
+
 # ── Pre-fetched News Context (optional, default OFF) ────────────────────────
 # When enabled, morning-signal reads a pre-built news digest JSON from S3 and
 # injects it into the Claude prompt as a SUPPLEMENTARY starting reference —

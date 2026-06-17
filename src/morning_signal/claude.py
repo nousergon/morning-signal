@@ -17,7 +17,11 @@ from morning_signal import config as _config
 from morning_signal.config import load_prompt
 from morning_signal.cost_telemetry import record_call_cost
 from morning_signal.news_context import load_news_context
-from morning_signal.search_telemetry import record_searches
+from morning_signal.search_telemetry import (
+    extract_searches,
+    record_searches,
+    unmet_required_topics,
+)
 
 log = logging.getLogger("morning-signal")
 
@@ -157,6 +161,35 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
             f"web_search floor not met: {n_searches} < {min_web_searches} "
             f"for {date_str}-{edition} — aborting before publish"
         )
+
+    # Fail-loud per-segment guard: the global ``min_web_searches`` floor only
+    # asserts the edition was grounded *somewhere*; it does NOT guarantee a
+    # *specific* search-critical segment was covered. The failure mode this
+    # catches (2026-06-17): with a tight ``web_search_max_uses`` budget the
+    # model spends its searches on the earlier, digest-reinforced segments and
+    # reaches the no-digest segments (e.g. a political pulse sourced only from
+    # Truth Social / X) with no budget left — then writes them from memory.
+    # ``required_search_topics`` lets the operator assert, per topic, that at
+    # least ``min_matches`` searches actually targeted it. Default empty =
+    # no-op (OSS-safe); the topics are declared in the operator's config
+    # alongside the prompt that defines those segments.
+    required_topics = config.get("required_search_topics") or []
+    if required_topics:
+        unmet = unmet_required_topics(extract_searches(response), required_topics)
+        if unmet:
+            log.error(
+                f"ABORT: {edition_label} edition for {friendly_date} did not "
+                f"web-search these required topic(s): {', '.join(unmet)}. The "
+                f"global search floor was met but a search-critical segment "
+                f"was skipped — almost certainly written from memory rather "
+                f"than live news. Refusing to publish. Raise "
+                f"web_search_max_uses so there is search budget for every "
+                f"segment, or adjust required_search_topics to opt out."
+            )
+            raise RuntimeError(
+                f"required search topic(s) not covered: {', '.join(unmet)} "
+                f"for {date_str}-{edition} — aborting before publish"
+            )
 
     script = _final_text_after_last_tool(response.content)
 

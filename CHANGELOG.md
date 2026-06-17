@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-segment search guard (`required_search_topics`, default none).** The
+  global `min_web_searches` floor only asserts an edition was grounded
+  *somewhere* — it does not guarantee a *specific* search-critical segment was
+  covered. With a tight `web_search_max_uses` budget the model can spend its
+  searches on earlier segments and reach a no-digest segment (e.g. a political
+  pulse sourced only from Truth Social / X) with no budget left, then write it
+  from memory while still clearing the floor. `required_search_topics` lets the
+  operator assert, per topic, that at least `min_matches` (default 1) searches
+  actually targeted it (case-insensitive keyword match on the query); an unmet
+  topic ABORTS before publish. Default empty = no-op (OSS-safe); topics are
+  declared in the operator's config alongside the prompt that defines those
+  segments. New `search_telemetry.unmet_required_topics` + public
+  `search_telemetry.extract_searches`. (2026-06-17: political segments were
+  silently dropped two days running because the live `web_search_max_uses` was
+  throttled to 5 — far below what 9 segments, 4 of them political, needed.)
+
 - **Pre-fetched news digest is a hard prerequisite when enabled
   (`news_context.required`, default `true`).** A soft-failed digest
   (missing / malformed / **stale** — its `date` != the episode's date /
