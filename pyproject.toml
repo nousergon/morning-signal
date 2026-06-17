@@ -41,6 +41,10 @@ dependencies = [
     # not carry an AGPL dependency. See _vendor/nousergon/__init__.py for the
     # strip plan (swap to the future public MIT nousergon-core lib).
     "pydantic>=2.0",
+    # Pydantic v2 cannot eval PEP 604 `str | None` field annotations under
+    # Python 3.9 even with `from __future__ import annotations`; the vendored
+    # cost/ModelMetadata models need this backport (mirrors nousergon-lib).
+    "eval_type_backport>=0.2.0; python_version < '3.10'",
 ]
 
 [project.optional-dependencies]
