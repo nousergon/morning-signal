@@ -49,6 +49,67 @@ max_tokens: 8192
 # ceiling, not a throttle. Omit to use the in-code default of 20.
 web_search_max_uses: 20
 
+# Minimum web searches an edition must perform or generation ABORTS before
+# publish (fail-loud). A zero/low-search edition is almost always
+# model-confabulated rather than grounded in live news — this guard stops a
+# hallucinated episode from going live silently (2026-06-16 incident: a
+# pre-fetched news block told the model it could skip search, so it ran 0
+# searches and fabricated the whole episode). Default 1. Set to 0 only if
+# your prompt legitimately needs no live web search.
+min_web_searches: 1
+
+# Per-segment search guard (optional, default none). ``min_web_searches`` above
+# only asserts the edition was grounded *somewhere* — it does NOT guarantee a
+# *specific* search-critical segment was covered. The failure mode this catches
+# (2026-06-17): with a tight ``web_search_max_uses`` budget the model spends its
+# searches on the earlier segments and reaches a no-digest segment (one with no
+# pre-fetched fallback) with no budget left, then writes it from memory. Declare
+# a topic per such segment, listing keywords any of which a search query must
+# contain; if fewer than ``min_matches`` (default 1) searches hit a topic,
+# generation ABORTS before publish. Default: none (no-op).
+#
+# ``editions`` (optional) scopes a topic to specific editions — useful when a
+# weekday edition has a segment (e.g. a political pulse) that the "weekend"
+# edition's prompt does not. Edition values are "am", "pm", and "weekend"
+# (non-trading days). A topic with an ``editions`` list is enforced ONLY for
+# those editions, so a weekday-only topic never falsely aborts the weekend pod.
+# Omit ``editions`` to enforce on every edition. Example for a political-pulse
+# segment sourced only from Truth Social / X, weekday editions only:
+#
+# required_search_topics:
+#   - name: "Political pulse"
+#     keywords: ["truth social", "trump", "maga"]
+#     min_matches: 2
+#     editions: ["am", "pm"]    # not "weekend" — the weekend prompt has no politics
+#   - name: "Seattle local"
+#     keywords: ["seattle", "cascades"]
+#     min_matches: 1
+
+# ── Pre-fetched News Context (optional, default OFF) ────────────────────────
+# When enabled, morning-signal reads a pre-built news digest JSON from S3 and
+# injects it into the Claude prompt as a SUPPLEMENTARY starting reference —
+# leads for the model to verify. It does NOT suppress web search: the model is
+# still instructed to web-search every segment (and the min_web_searches guard
+# above enforces that it does). Leave disabled (the default) to keep the
+# standard web-search-only behavior — when off, this block has zero effect.
+#
+# The digest is a JSON object of the shape
+#   {"schema_version": 1, "date": "...", "sections": {"<name>": [<item>, ...]}}
+# where each item has a `title` (required) plus optional `ticker`, `source`,
+# `published`, `excerpt`, `url`.
+#
+# `required` (default true when enabled) makes the digest a HARD prerequisite:
+# if it is missing, malformed, STALE (its `date` != the episode's date), or
+# empty, generation ABORTS before publish — no valid fresh digest, no pod. This
+# stops a soft-failed digest from silently degrading into a pod narrated without
+# the news it was meant to carry. Set `required: false` to fall back to the
+# fail-soft behavior (warn + generate with web search only).
+news_context:
+  enabled: false
+  required: true                                  # missing/stale/empty digest → abort the pod (set false for fail-soft)
+  s3_bucket: ""                                   # bucket holding the digest JSON (required when enabled)
+  s3_key: "data/news_digest_daily/latest.json"    # object key for the digest (default shown)
+
 # The episode prompt is fully yours to customize: edit ``prompt.md`` (and
 # ``prompt_weekend.md`` for weekend/holiday editions). See the ``data/prompt-*``
 # starters (markets-only, tech-only, generic-news, local-news, blank) for

@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`required_search_topics` entries can be scoped to editions (`editions`).**
+  Different editions run different prompts with different segments — e.g. a
+  weekday edition with a political-pulse segment and a `weekend` edition (the
+  non-trading-day prompt) with no politics at all. A topic carrying an
+  `editions` list (values: `am`, `pm`, `weekend`) is enforced only for those
+  editions, so a weekday-only topic no longer falsely aborts the weekend pod
+  that legitimately never searches it. Omit `editions` to enforce on every
+  edition (unchanged default). `unmet_required_topics` gains an optional
+  `edition` arg; `generate_script` passes `"weekend"` on non-trading days.
+
+- **Per-segment search guard (`required_search_topics`, default none).** The
+  global `min_web_searches` floor only asserts an edition was grounded
+  *somewhere* — it does not guarantee a *specific* search-critical segment was
+  covered. With a tight `web_search_max_uses` budget the model can spend its
+  searches on earlier segments and reach a no-digest segment (e.g. a political
+  pulse sourced only from Truth Social / X) with no budget left, then write it
+  from memory while still clearing the floor. `required_search_topics` lets the
+  operator assert, per topic, that at least `min_matches` (default 1) searches
+  actually targeted it (case-insensitive keyword match on the query); an unmet
+  topic ABORTS before publish. Default empty = no-op (OSS-safe); topics are
+  declared in the operator's config alongside the prompt that defines those
+  segments. New `search_telemetry.unmet_required_topics` + public
+  `search_telemetry.extract_searches`. (2026-06-17: political segments were
+  silently dropped two days running because the live `web_search_max_uses` was
+  throttled to 5 — far below what 9 segments, 4 of them political, needed.)
+
+- **Pre-fetched news digest is a hard prerequisite when enabled
+  (`news_context.required`, default `true`).** A soft-failed digest
+  (missing / malformed / **stale** — its `date` != the episode's date /
+  empty) now makes `load_news_context` **raise** and aborts the pod
+  before publish, instead of silently degrading into an episode narrated
+  without the news it was meant to carry. The freshness watchdog then
+  catches the absent episode. Set `news_context.required: false` to opt
+  back into the original fail-soft (warn + web-search-only) behavior.
+  `generate_script` passes the episode date so staleness can be checked.
+
+- **Fail-loud web-search floor guard.** `generate_script` now aborts
+  before any TTS/publish when an edition runs fewer than
+  `min_web_searches` web searches (default `1`). A zero/low-search
+  edition is almost always model-confabulated rather than grounded in
+  live news; raising lets the silent-failure watchdog catch the absent
+  fresh episode instead of a hallucinated one going live. OSS users with
+  a prompt that legitimately needs no live search can set
+  `min_web_searches: 0` to opt out.
+
+### Changed
+
+- **Pre-fetched news context reframed as supplementary.** The injected
+  news block previously instructed the model to "use the items below …
+  do NOT web-search them", which made the model skip web search entirely
+  — including segments the digest never covers (e.g. the political /
+  Truth Social pulse) — and hallucinate a full episode with
+  `web_search_requests == 0` (2026-06-16 incident). The block is now
+  framed as a supplementary starting reference: the model is told it MUST
+  still web-search every segment, that the digest omits the political
+  segments, and to prefer fresh search results over a pre-fetched item on
+  conflict.
+
 ### Removed
 
 - **Public-topics mode and segmented generation.** Dropped the

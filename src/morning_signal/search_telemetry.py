@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("morning-signal")
 
 
-def _extract_searches(msg: "Message") -> list[dict[str, Any]]:
+def extract_searches(msg: "Message") -> list[dict[str, Any]]:
     """Pair ``server_tool_use`` blocks with their matching
     ``web_search_tool_result`` and return one dict per search.
 
@@ -111,7 +111,7 @@ def record_searches(
     Returns the number of searches recorded (0 if the call did no
     ``web_search`` at all).
     """
-    searches = _extract_searches(msg)
+    searches = extract_searches(msg)
     if not searches:
         return 0
 
@@ -127,3 +127,66 @@ def record_searches(
         f"Searches: recorded {len(searches)} queries to {out_path.name}"
     )
     return len(searches)
+
+
+def unmet_required_topics(
+    searches: list[dict[str, Any]],
+    required_topics: list[dict[str, Any]],
+    edition: str | None = None,
+) -> list[str]:
+    """Return the names of required search topics that were under-covered.
+
+    A *required search topic* is a generic, config-driven assertion that the
+    model must have issued at least ``min_matches`` (default 1) ``web_search``
+    queries whose text contains any of the topic's ``keywords``. It exists to
+    catch the failure mode where a global search floor is met but a *specific*
+    segment — typically one with no pre-fetched-digest fallback — is silently
+    skipped and written from training memory instead of live news.
+
+    The engine ships NO built-in topics (the default is an empty list, a
+    no-op): which segments are search-critical is the operator's editorial
+    choice, declared in their config alongside the prompt that defines those
+    segments. Matching is case-insensitive substring containment over the
+    query string.
+
+    Each ``required_topics`` entry is a dict::
+
+        {"name": "Political pulse", "keywords": ["truth social", "maga"],
+         "min_matches": 1, "editions": ["am", "pm"]}
+
+    Entries missing ``keywords`` (or with an empty list) are skipped — a topic
+    with nothing to match cannot meaningfully gate. ``min_matches`` defaults to
+    1 and is floored at 1.
+
+    ``editions`` (optional) scopes a topic to specific editions. Different
+    editions can run different prompts with different segments — e.g. a weekday
+    edition with a political-pulse segment and a "weekend" edition with no
+    politics at all. A topic with an ``editions`` list is enforced ONLY when
+    ``edition`` is one of its values; otherwise it is skipped, so a weekday-only
+    topic does not falsely abort the weekend edition that legitimately never
+    searches it. Omit ``editions`` (the default) to enforce on every edition.
+    Matching is case-insensitive. When ``edition`` is ``None`` the filter is
+    inert (every topic enforced) — callers that don't track editions keep the
+    original behavior.
+
+    Returns the list of topic ``name``s whose match count fell below
+    ``min_matches`` (empty list = every required topic covered).
+    """
+    queries = [str(s.get("query", "")).lower() for s in searches]
+    edition_lc = edition.lower() if isinstance(edition, str) else None
+    unmet: list[str] = []
+    for topic in required_topics:
+        keywords = [str(k).lower() for k in (topic.get("keywords") or []) if str(k).strip()]
+        if not keywords:
+            continue
+        editions = [str(e).lower() for e in (topic.get("editions") or []) if str(e).strip()]
+        if editions and edition_lc is not None and edition_lc not in editions:
+            continue
+        name = str(topic.get("name") or ", ".join(keywords))
+        min_matches = max(1, int(topic.get("min_matches", 1)))
+        matches = sum(
+            1 for q in queries if any(kw in q for kw in keywords)
+        )
+        if matches < min_matches:
+            unmet.append(name)
+    return unmet

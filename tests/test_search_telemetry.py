@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from morning_signal.search_telemetry import _extract_searches, record_searches
+from morning_signal.search_telemetry import extract_searches, record_searches
 
 
 class _Block:
@@ -71,7 +71,7 @@ def test_extracts_query_and_urls_for_each_search():
         _Block(type="text", text="...closing"),
     ])
 
-    out = _extract_searches(msg)
+    out = extract_searches(msg)
     assert len(out) == 2
     assert out[0] == {
         "query": "S&P 500 close today",
@@ -89,7 +89,7 @@ def test_extracts_query_and_urls_for_each_search():
 
 def test_returns_empty_when_no_web_search_blocks():
     msg = _Message([_Block(type="text", text="no tool use here")])
-    assert _extract_searches(msg) == []
+    assert extract_searches(msg) == []
 
 
 def test_handles_search_with_missing_result_block():
@@ -99,7 +99,7 @@ def test_handles_search_with_missing_result_block():
     msg = _Message([
         _server_tool_use(block_id="srv_1", query="orphan query"),
     ])
-    out = _extract_searches(msg)
+    out = extract_searches(msg)
     assert len(out) == 1
     assert out[0]["query"] == "orphan query"
     assert out[0]["urls"] == []
@@ -112,7 +112,7 @@ def test_handles_error_result_block():
         _server_tool_use(block_id="srv_1", query="will fail"),
         _tool_result_error(tool_use_id="srv_1", error_code="max_uses_exceeded"),
     ])
-    out = _extract_searches(msg)
+    out = extract_searches(msg)
     assert len(out) == 1
     assert out[0]["urls"] == []
     assert out[0]["error"] == "max_uses_exceeded"
@@ -188,3 +188,116 @@ def test_record_appends_subsequent_calls_to_same_file(tmp_path):
 
     out = tmp_path / "2026-05-27-am.searches.jsonl"
     assert len(out.read_text().strip().splitlines()) == 3
+
+
+# ── unmet_required_topics ────────────────────────────────────────────────────
+
+from morning_signal.search_telemetry import unmet_required_topics  # noqa: E402
+
+
+def _searches(*queries: str) -> list[dict]:
+    return [{"query": q, "urls": [], "result_count": 0, "error": None} for q in queries]
+
+
+def test_no_required_topics_is_a_noop():
+    assert unmet_required_topics(_searches("anything"), []) == []
+
+
+def test_covered_topic_returns_empty():
+    searches = _searches("Trump Truth Social posts today", "SPY futures")
+    topics = [{"name": "Political pulse", "keywords": ["truth social", "maga"]}]
+    assert unmet_required_topics(searches, topics) == []
+
+
+def test_uncovered_topic_is_reported_by_name():
+    searches = _searches("SPY futures", "NVDA earnings")
+    topics = [{"name": "Political pulse", "keywords": ["truth social", "maga"]}]
+    assert unmet_required_topics(searches, topics) == ["Political pulse"]
+
+
+def test_matching_is_case_insensitive():
+    searches = _searches("Latest MAGA reaction to the bill")
+    topics = [{"name": "Political pulse", "keywords": ["maga"]}]
+    assert unmet_required_topics(searches, topics) == []
+
+
+def test_only_uncovered_topics_returned_when_multiple():
+    searches = _searches("trump truth social", "AAPL guidance")
+    topics = [
+        {"name": "Political pulse", "keywords": ["truth social"]},
+        {"name": "Seattle local", "keywords": ["seattle", "cascades"]},
+    ]
+    assert unmet_required_topics(searches, topics) == ["Seattle local"]
+
+
+def test_min_matches_threshold_enforced():
+    searches = _searches("trump rally", "unrelated")  # one political hit
+    topics = [{"name": "Political pulse", "keywords": ["trump"], "min_matches": 2}]
+    assert unmet_required_topics(searches, topics) == ["Political pulse"]
+
+
+def test_min_matches_satisfied_by_distinct_queries():
+    searches = _searches("trump rally", "trump truth social", "spy")
+    topics = [{"name": "Political pulse", "keywords": ["trump"], "min_matches": 2}]
+    assert unmet_required_topics(searches, topics) == []
+
+
+def test_topic_without_keywords_is_skipped():
+    # A topic with nothing to match cannot meaningfully gate — never reported.
+    topics = [{"name": "Empty", "keywords": []}, {"name": "Missing"}]
+    assert unmet_required_topics(_searches("nothing relevant"), topics) == []
+
+
+def test_topic_name_defaults_to_keywords_when_unnamed():
+    searches = _searches("only markets")
+    topics = [{"keywords": ["truth social", "maga"]}]
+    assert unmet_required_topics(searches, topics) == ["truth social, maga"]
+
+
+def test_min_matches_floored_at_one():
+    # A non-positive min_matches is treated as 1, not "always satisfied".
+    searches = _searches("markets only")
+    topics = [{"name": "Political", "keywords": ["trump"], "min_matches": 0}]
+    assert unmet_required_topics(searches, topics) == ["Political"]
+
+
+# ── editions scoping ─────────────────────────────────────────────────────────
+
+
+def test_weekday_only_topic_skipped_on_weekend_edition():
+    # The 2026-06-17 false-abort guard: the weekend prompt has no politics, so a
+    # weekday-only political topic must NOT abort the weekend pod.
+    searches = _searches("frontier models this week", "arxiv papers")
+    topics = [{"name": "Political pulse", "keywords": ["trump"], "editions": ["am", "pm"]}]
+    assert unmet_required_topics(searches, topics, edition="weekend") == []
+
+
+def test_scoped_topic_enforced_on_matching_edition():
+    searches = _searches("markets only", "nvda")
+    topics = [{"name": "Political pulse", "keywords": ["trump"], "editions": ["am", "pm"]}]
+    assert unmet_required_topics(searches, topics, edition="am") == ["Political pulse"]
+
+
+def test_scoped_topic_satisfied_on_matching_edition():
+    searches = _searches("trump truth social posts")
+    topics = [{"name": "Political pulse", "keywords": ["trump"], "editions": ["am"]}]
+    assert unmet_required_topics(searches, topics, edition="am") == []
+
+
+def test_editions_match_is_case_insensitive():
+    searches = _searches("markets only")
+    topics = [{"name": "Political", "keywords": ["trump"], "editions": ["AM"]}]
+    assert unmet_required_topics(searches, topics, edition="am") == ["Political"]
+
+
+def test_unscoped_topic_enforced_on_every_edition():
+    searches = _searches("markets only")
+    topics = [{"name": "Political", "keywords": ["trump"]}]  # no editions
+    assert unmet_required_topics(searches, topics, edition="weekend") == ["Political"]
+
+
+def test_edition_none_makes_scoping_inert():
+    # Backward-compat: callers that don't pass an edition enforce every topic.
+    searches = _searches("markets only")
+    topics = [{"name": "Political", "keywords": ["trump"], "editions": ["am"]}]
+    assert unmet_required_topics(searches, topics) == ["Political"]

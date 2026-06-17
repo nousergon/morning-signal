@@ -16,7 +16,12 @@ from alpha_engine_lib.trading_calendar import is_trading_day
 from morning_signal import config as _config
 from morning_signal.config import load_prompt
 from morning_signal.cost_telemetry import record_call_cost
-from morning_signal.search_telemetry import record_searches
+from morning_signal.news_context import load_news_context
+from morning_signal.search_telemetry import (
+    extract_searches,
+    record_searches,
+    unmet_required_topics,
+)
 
 log = logging.getLogger("morning-signal")
 
@@ -82,9 +87,22 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
         build_web_search_tool(max_uses=config.get("web_search_max_uses", 20))
     ]
 
+    # Optional pre-fetched news context (config-gated, default OFF). When
+    # enabled it is a HARD requirement by default: load_news_context RAISES
+    # on a missing / malformed / stale / empty digest (run_date drives the
+    # staleness check), aborting the pod before publish rather than
+    # narrating yesterday's or no news. Set news_context.required: false to
+    # fall back to fail-soft. When non-empty the block is injected BETWEEN
+    # the edition sentence and the generate-instruction as a supplementary
+    # reference; the canonical-opener instruction stays at the END.
+    news_block = load_news_context(config, run_date=date_str)
+    news_segment = f"{news_block}\n\n" if news_block else ""
+
     user_content = (
         f"Today is {friendly_date}. This is the {edition_label} edition "
-        f"of Morning Signal. Generate today's "
+        f"of Morning Signal.\n\n"
+        f"{news_segment}"
+        f"Generate today's "
         f"{edition_label.lower()} episode per the system prompt, respecting "
         f"the News Window for this edition (only news/events since the "
         f"prior edition).\n\n"
@@ -112,12 +130,72 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
-    record_searches(
+    n_searches = record_searches(
         msg=response,
         date_str=date_str,
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
+
+    # Fail-loud guard: an edition that ran fewer than ``min_web_searches``
+    # web searches is almost certainly model-confabulated rather than
+    # grounded in live news — the failure mode that shipped a fully
+    # hallucinated, politics-free episode on 2026-06-16 when the
+    # pre-fetched news block told the model it could skip searching.
+    # Raise BEFORE any TTS/publish so the silent-failure watchdog catches
+    # the absent fresh episode instead of a bad one going live. OSS users
+    # with a prompt that legitimately needs no live search can set
+    # ``min_web_searches: 0`` to opt out.
+    min_web_searches = config.get("min_web_searches", 1)
+    if n_searches < min_web_searches:
+        log.error(
+            f"ABORT: {edition_label} edition for {friendly_date} ran only "
+            f"{n_searches} web search(es) (floor is {min_web_searches}). "
+            f"A zero/low-search edition is almost certainly hallucinated "
+            f"rather than grounded in live news — refusing to publish. "
+            f"Check the web_search tool, the model, and any pre-fetched "
+            f"news-context framing. To intentionally allow this, set "
+            f"min_web_searches in config."
+        )
+        raise RuntimeError(
+            f"web_search floor not met: {n_searches} < {min_web_searches} "
+            f"for {date_str}-{edition} — aborting before publish"
+        )
+
+    # Fail-loud per-segment guard: the global ``min_web_searches`` floor only
+    # asserts the edition was grounded *somewhere*; it does NOT guarantee a
+    # *specific* search-critical segment was covered. The failure mode this
+    # catches (2026-06-17): with a tight ``web_search_max_uses`` budget the
+    # model spends its searches on the earlier, digest-reinforced segments and
+    # reaches the no-digest segments (e.g. a political pulse sourced only from
+    # Truth Social / X) with no budget left — then writes them from memory.
+    # ``required_search_topics`` lets the operator assert, per topic, that at
+    # least ``min_matches`` searches actually targeted it. Default empty =
+    # no-op (OSS-safe); the topics are declared in the operator's config
+    # alongside the prompt that defines those segments. A topic can be scoped
+    # to specific editions (``editions: [...]``) so a weekday-only segment does
+    # not falsely abort the "weekend" edition, which runs a different prompt
+    # with different segments and legitimately never searches it.
+    required_topics = config.get("required_search_topics") or []
+    if required_topics:
+        effective_edition = "weekend" if weekend else edition
+        unmet = unmet_required_topics(
+            extract_searches(response), required_topics, edition=effective_edition
+        )
+        if unmet:
+            log.error(
+                f"ABORT: {edition_label} edition for {friendly_date} did not "
+                f"web-search these required topic(s): {', '.join(unmet)}. The "
+                f"global search floor was met but a search-critical segment "
+                f"was skipped — almost certainly written from memory rather "
+                f"than live news. Refusing to publish. Raise "
+                f"web_search_max_uses so there is search budget for every "
+                f"segment, or adjust required_search_topics to opt out."
+            )
+            raise RuntimeError(
+                f"required search topic(s) not covered: {', '.join(unmet)} "
+                f"for {date_str}-{edition} — aborting before publish"
+            )
 
     script = _final_text_after_last_tool(response.content)
 

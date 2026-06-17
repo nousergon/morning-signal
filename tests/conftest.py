@@ -72,6 +72,11 @@ def sample_config() -> dict:
         "tts": {"polly_voice": "Ruth", "polly_engine": "neural", "speed": 1.5},
         "claude_model": "claude-sonnet-4-6",
         "max_tokens": 8192,
+        # Mocked Claude responses in these orchestration tests do no real
+        # web search; disable the fail-loud search-floor guard so the
+        # full-pipeline path runs (the guard itself is covered directly in
+        # test_orchestration's web-search-floor tests).
+        "min_web_searches": 0,
         "feed_max_episodes": 90,
         "notifications": {
             # Disabled by default in the fixture — tests that exercise
