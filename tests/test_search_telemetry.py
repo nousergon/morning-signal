@@ -259,3 +259,45 @@ def test_min_matches_floored_at_one():
     searches = _searches("markets only")
     topics = [{"name": "Political", "keywords": ["trump"], "min_matches": 0}]
     assert unmet_required_topics(searches, topics) == ["Political"]
+
+
+# ── editions scoping ─────────────────────────────────────────────────────────
+
+
+def test_weekday_only_topic_skipped_on_weekend_edition():
+    # The 2026-06-17 false-abort guard: the weekend prompt has no politics, so a
+    # weekday-only political topic must NOT abort the weekend pod.
+    searches = _searches("frontier models this week", "arxiv papers")
+    topics = [{"name": "Political pulse", "keywords": ["trump"], "editions": ["am", "pm"]}]
+    assert unmet_required_topics(searches, topics, edition="weekend") == []
+
+
+def test_scoped_topic_enforced_on_matching_edition():
+    searches = _searches("markets only", "nvda")
+    topics = [{"name": "Political pulse", "keywords": ["trump"], "editions": ["am", "pm"]}]
+    assert unmet_required_topics(searches, topics, edition="am") == ["Political pulse"]
+
+
+def test_scoped_topic_satisfied_on_matching_edition():
+    searches = _searches("trump truth social posts")
+    topics = [{"name": "Political pulse", "keywords": ["trump"], "editions": ["am"]}]
+    assert unmet_required_topics(searches, topics, edition="am") == []
+
+
+def test_editions_match_is_case_insensitive():
+    searches = _searches("markets only")
+    topics = [{"name": "Political", "keywords": ["trump"], "editions": ["AM"]}]
+    assert unmet_required_topics(searches, topics, edition="am") == ["Political"]
+
+
+def test_unscoped_topic_enforced_on_every_edition():
+    searches = _searches("markets only")
+    topics = [{"name": "Political", "keywords": ["trump"]}]  # no editions
+    assert unmet_required_topics(searches, topics, edition="weekend") == ["Political"]
+
+
+def test_edition_none_makes_scoping_inert():
+    # Backward-compat: callers that don't pass an edition enforce every topic.
+    searches = _searches("markets only")
+    topics = [{"name": "Political", "keywords": ["trump"], "editions": ["am"]}]
+    assert unmet_required_topics(searches, topics) == ["Political"]

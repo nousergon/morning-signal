@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`required_search_topics` entries can be scoped to editions (`editions`).**
+  Different editions run different prompts with different segments — e.g. a
+  weekday edition with a political-pulse segment and a `weekend` edition (the
+  non-trading-day prompt) with no politics at all. A topic carrying an
+  `editions` list (values: `am`, `pm`, `weekend`) is enforced only for those
+  editions, so a weekday-only topic no longer falsely aborts the weekend pod
+  that legitimately never searches it. Omit `editions` to enforce on every
+  edition (unchanged default). `unmet_required_topics` gains an optional
+  `edition` arg; `generate_script` passes `"weekend"` on non-trading days.
+
 - **Per-segment search guard (`required_search_topics`, default none).** The
   global `min_web_searches` floor only asserts an edition was grounded
   *somewhere* — it does not guarantee a *specific* search-critical segment was

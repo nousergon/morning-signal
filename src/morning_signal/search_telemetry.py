@@ -132,6 +132,7 @@ def record_searches(
 def unmet_required_topics(
     searches: list[dict[str, Any]],
     required_topics: list[dict[str, Any]],
+    edition: str | None = None,
 ) -> list[str]:
     """Return the names of required search topics that were under-covered.
 
@@ -151,20 +152,35 @@ def unmet_required_topics(
     Each ``required_topics`` entry is a dict::
 
         {"name": "Political pulse", "keywords": ["truth social", "maga"],
-         "min_matches": 1}
+         "min_matches": 1, "editions": ["am", "pm"]}
 
     Entries missing ``keywords`` (or with an empty list) are skipped — a topic
     with nothing to match cannot meaningfully gate. ``min_matches`` defaults to
     1 and is floored at 1.
 
+    ``editions`` (optional) scopes a topic to specific editions. Different
+    editions can run different prompts with different segments — e.g. a weekday
+    edition with a political-pulse segment and a "weekend" edition with no
+    politics at all. A topic with an ``editions`` list is enforced ONLY when
+    ``edition`` is one of its values; otherwise it is skipped, so a weekday-only
+    topic does not falsely abort the weekend edition that legitimately never
+    searches it. Omit ``editions`` (the default) to enforce on every edition.
+    Matching is case-insensitive. When ``edition`` is ``None`` the filter is
+    inert (every topic enforced) — callers that don't track editions keep the
+    original behavior.
+
     Returns the list of topic ``name``s whose match count fell below
     ``min_matches`` (empty list = every required topic covered).
     """
     queries = [str(s.get("query", "")).lower() for s in searches]
+    edition_lc = edition.lower() if isinstance(edition, str) else None
     unmet: list[str] = []
     for topic in required_topics:
         keywords = [str(k).lower() for k in (topic.get("keywords") or []) if str(k).strip()]
         if not keywords:
+            continue
+        editions = [str(e).lower() for e in (topic.get("editions") or []) if str(e).strip()]
+        if editions and edition_lc is not None and edition_lc not in editions:
             continue
         name = str(topic.get("name") or ", ".join(keywords))
         min_matches = max(1, int(topic.get("min_matches", 1)))
