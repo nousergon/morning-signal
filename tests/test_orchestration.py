@@ -323,7 +323,7 @@ def test_lib_validator_rejects_server_tool_plus_assistant_prefill():
     raises ValueError at construction time so the failure surfaces at
     PR time, not at 5 AM in production.
     """
-    from alpha_engine_lib.anthropic_payload import (
+    from morning_signal._vendor.nousergon.anthropic_payload import (
         PayloadInvariantError,
         validate_payload,
     )
@@ -343,7 +343,7 @@ def test_lib_validator_rejects_server_tool_plus_assistant_prefill():
 
 
 def test_lib_validator_allows_server_tool_without_prefill():
-    from alpha_engine_lib.anthropic_payload import validate_payload
+    from morning_signal._vendor.nousergon.anthropic_payload import validate_payload
 
     payload = {
         "model": "claude-sonnet-4-6",
@@ -356,7 +356,7 @@ def test_lib_validator_allows_server_tool_without_prefill():
 
 
 def test_lib_validator_allows_prefill_without_server_tool():
-    from alpha_engine_lib.anthropic_payload import validate_payload
+    from morning_signal._vendor.nousergon.anthropic_payload import validate_payload
 
     payload = {
         "model": "claude-sonnet-4-6",
@@ -374,7 +374,7 @@ def test_lib_validator_rejects_computer_use_plus_prefill():
     """Same invariant generalizes across all server-side tool prefixes
     (web_search_*, computer_use_*, bash_*, text_editor_*) — assert one
     of the others to defend against per-prefix regression."""
-    from alpha_engine_lib.anthropic_payload import (
+    from morning_signal._vendor.nousergon.anthropic_payload import (
         PayloadInvariantError,
         validate_payload,
     )

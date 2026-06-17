@@ -33,25 +33,14 @@ dependencies = [
     "typer>=0.12.0",
     # Telegram-routed failure + healthy-completion pings.
     "flow-doctor==0.5.0",
-    # Anthropic cost telemetry — token + server-tool fee accounting
-    # against a packaged price card. Consumer of
-    # ``alpha_engine_lib.cost.record_anthropic_call`` (lifted to lib
-    # in v0.33.0 after data + executor became consumers #2 + #3 of the
-    # capture pattern morning-signal originated). 0.33 → 0.36 minor
-    # bumps add ``pipeline_status``, ``ssm_dispatcher``, and RAG
-    # cleanup — none of which morning-signal consumes; ``cost`` and
-    # ``trading_calendar`` surfaces are byte-identical across the range.
-    # 0.37 ships ``anthropic_payload`` (server-tool ⊥ prefill validator
-    # + ``build_messages_payload`` + ``build_web_search_tool`` lift);
-    # 0.38.1 is the first PyPI-published patch with that surface (0.38.0
-    # auto-tag fired but PyPI upload failed on a too-long description —
-    # see alpha-engine-lib #80). Consumed by ``src/morning_signal/claude.py``
-    # + ``tests/live_api_smoke.py`` for the L242 chokepoint swap.
-    # 0.40.1 makes ``PriceTable.get`` accept the dated snapshot form
-    # (e.g. ``claude-haiku-4-5-20251001``) the Anthropic SDK returns in
-    # ``Message.model`` — required so cost telemetry records without
-    # raising ``PriceCardLookupError`` (see alpha-engine-lib #84).
-    "alpha-engine-lib>=0.40.1,<0.60",
+    # pydantic backs the vendored cost-telemetry + ModelMetadata models.
+    # The three commodity utilities morning-signal used (anthropic_payload,
+    # cost, trading_calendar) were VENDORED from MIT-era nousergon-lib
+    # (<= 0.59.8) into src/morning_signal/_vendor/nousergon/ when the lib
+    # relicensed to AGPL-3.0-only at 0.60.0 — morning-signal is MIT and must
+    # not carry an AGPL dependency. See _vendor/nousergon/__init__.py for the
+    # strip plan (swap to the future public MIT nousergon-core lib).
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]

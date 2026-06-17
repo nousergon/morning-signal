@@ -26,7 +26,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from alpha_engine_lib.cost import record_anthropic_call
+from morning_signal._vendor.nousergon.cost import record_anthropic_call
 
 if TYPE_CHECKING:
     from anthropic.types import Message

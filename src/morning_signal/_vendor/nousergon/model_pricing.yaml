@@ -1,0 +1,73 @@
+# LLM cost rate card — default pricing shipped with alpha_engine_lib.
+#
+# Loaded by ``alpha_engine_lib.cost.load_default_pricing``. Consumers that
+# need their own operator-managed rate card (e.g. alpha-engine-research)
+# should keep using ``load_pricing(path)`` with an external YAML; this
+# file is the sensible default for new consumers (morning-signal and
+# anything else outside the alpha-engine repos) so they don't have to
+# author a pricing table just to wire cost telemetry.
+#
+# Schema (per card):
+#   model_name:           Anthropic model identifier (matches ModelMetadata.model_name).
+#   effective_from:       ISO date when this rate became active (inclusive).
+#   input_per_1m:         USD per 1,000,000 input tokens.
+#   output_per_1m:        USD per 1,000,000 output tokens.
+#   cache_read_per_1m:    USD per 1,000,000 cached-prompt-read tokens (0.10× input).
+#   cache_create_per_1m:  USD per 1,000,000 5-MIN cache-write tokens (1.25× input).
+#                         (1-hour cache writes are 2.0× input; not modeled here —
+#                         the SDK reports cache-write tokens uniformly so we
+#                         price them at the standard 5-min rate. Add a separate
+#                         field if 1-hour writes become a material spend share.)
+#
+# **Cards for the same model MUST be sorted ascending by effective_from.**
+# When pricing changes, append a new card with the new effective_from rather
+# than editing an existing one — historical artifacts remain repriceable
+# against the rate that was active at their capture time.
+#
+# Sources:
+#   https://platform.claude.com/docs/en/about-claude/pricing  (verify periodically)
+#
+# version: 1
+cards:
+  - model_name: claude-haiku-4-5
+    effective_from: 2026-01-01
+    input_per_1m: 1.00
+    output_per_1m: 5.00
+    cache_read_per_1m: 0.10
+    cache_create_per_1m: 1.25
+  - model_name: claude-sonnet-4-6
+    effective_from: 2026-01-01
+    input_per_1m: 3.00
+    output_per_1m: 15.00
+    cache_read_per_1m: 0.30
+    cache_create_per_1m: 3.75
+  - model_name: claude-opus-4-7
+    effective_from: 2026-01-01
+    input_per_1m: 5.00
+    output_per_1m: 25.00
+    cache_read_per_1m: 0.50
+    cache_create_per_1m: 6.25
+
+# Server-side tool fees (Anthropic ``Message.usage.server_tool_use``).
+# Billed as flat per-request fees, independent of which model invoked
+# the tool. Rates published by Anthropic as USD per 1,000 requests.
+#
+# Schema (per fee):
+#   tool_name:              Server-tool identifier (matches the field name
+#                           in ``anthropic.types.ServerToolUsage``).
+#   effective_from:         ISO date when this rate became active.
+#   per_1k_requests_usd:    USD per 1,000 requests.
+#
+# **Fees for the same tool MUST be sorted ascending by effective_from.**
+#
+# web_fetch is currently free per Anthropic's pricing page (no separate
+# per-request fee) — kept in the table at 0.00 so request counts still
+# flow through the pricing pipeline; bump the rate here if/when Anthropic
+# introduces a fee.
+tool_fees:
+  - tool_name: web_search
+    effective_from: 2026-01-01
+    per_1k_requests_usd: 10.00
+  - tool_name: web_fetch
+    effective_from: 2026-01-01
+    per_1k_requests_usd: 0.00

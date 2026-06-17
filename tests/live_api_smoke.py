@@ -36,7 +36,7 @@ from pathlib import Path
 # `python tests/live_api_smoke.py` from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from alpha_engine_lib.anthropic_payload import (  # noqa: E402
+from morning_signal._vendor.nousergon.anthropic_payload import (  # noqa: E402
     build_messages_payload,
     build_web_search_tool,
 )
