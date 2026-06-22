@@ -37,6 +37,7 @@ tts:
   # Google Chirp3 HD (engine: google) — pip install '.[google]'; all Chirp3 voices same price (1M chars/mo free)
   google_voice: "en-US-Chirp3-HD-Leda"
   google_language: "en-US"
+  google_max_sentence_chars: 400   # Chirp3 HD rejects any single sentence over its internal cap; we pre-split run-ons longer than this at clause boundaries (keep < ~500)
   speed: 1.0               # Playback speed multiplier; 1.0 = normal conversational pace, raise to 1.25–1.5 for fast brief
 
 # ── Generation ──────────────────────────────────────────────────────────────
