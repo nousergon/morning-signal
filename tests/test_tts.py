@@ -76,6 +76,48 @@ def test_tts_google_chunks_writes_and_uses_config_voice(monkeypatch, tmp_path):
     assert not list(tmp_path.glob("_gchunk_*.mp3"))
 
 
+def _max_sentence_len(chunk: str) -> int:
+    import re
+
+    return max((len(s) for s in re.split(r"(?<=[.!?])\s+", chunk)), default=0)
+
+
+def test_chunk_text_splits_oversized_sentence_at_clause_boundaries():
+    """Regression for 2026-06-22 AM: a 570-char run-on sentence (the NVIDIA bond
+    offering) tripped Chirp3 HD's per-sentence cap. With max_sentence_len set, no
+    emitted chunk may contain a sentence longer than the cap."""
+    cap = 400
+    run_on = (
+        "On June 18, 2026, NVIDIA Corporation completed an offering of "
+        "$3,500,000,000 aggregate principal amount of senior notes, "
+        + ("comprising several tranches with staggered maturities, ") * 12
+        + "with proceeds earmarked for general corporate purposes."
+    )
+    assert len(run_on) > cap  # genuinely oversized input
+    script = f"A short lead sentence. {run_on} A short trailing sentence."
+
+    chunks = tts._chunk_text(script, 4500, max_sentence_len=cap)
+
+    assert chunks
+    for chunk in chunks:
+        assert _max_sentence_len(chunk) <= cap
+
+
+def test_chunk_text_leaves_normal_sentences_intact():
+    """Sentences within the cap are not mangled — count is preserved."""
+    script = "First sentence here. Second one follows. Third wraps it up."
+    chunks = tts._chunk_text(script, 4500, max_sentence_len=400)
+    assert " ".join(chunks).split() == script.split()
+
+
+def test_split_oversized_sentence_terminates_each_fragment():
+    long = "alpha beta gamma delta epsilon zeta eta theta " * 20  # no internal punctuation
+    frags = tts._split_oversized_sentence(long.strip(), 200)
+    assert len(frags) > 1
+    assert all(f[-1] in ".!?" for f in frags)
+    assert all(len(f) <= 200 for f in frags)
+
+
 def test_adjust_speed_retries_then_succeeds(monkeypatch, tmp_path):
     """A transient ffmpeg abort (SIGABRT under memory pressure) should be ridden
     out by the bounded retry rather than killing the episode."""

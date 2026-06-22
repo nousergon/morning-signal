@@ -103,8 +103,14 @@ def tts_google(script: str, output_path: Path, config: dict) -> None:
     audio_cfg = gtts.AudioConfig(audio_encoding=gtts.AudioEncoding.MP3)
     log.info(f"TTS: Google Chirp3 HD voice={voice_name}")
 
-    # Chirp3 HD request limit is 5000 bytes; chunk conservatively on sentences.
-    chunks = _chunk_text(script, 4500)
+    # Two independent Chirp3 HD limits: a 5000-byte *per-request* cap (handled by
+    # the 4500 chunk size) AND an internal *per-sentence* cap — a single sentence
+    # over the cap is rejected with `400 ... sentences that are too long`,
+    # regardless of request size. So we also pre-split any oversized sentence at
+    # clause/word boundaries. Default 400 chars sits well under the ~500-char
+    # failure zone (a 570-char run-on broke the 2026-06-22 AM run).
+    max_sentence = int(tts_cfg.get("google_max_sentence_chars", 400))
+    chunks = _chunk_text(script, 4500, max_sentence_len=max_sentence)
     log.info(f"Splitting into {len(chunks)} chunks...")
 
     temp_files = []
@@ -131,8 +137,67 @@ def tts_google(script: str, output_path: Path, config: dict) -> None:
     log.info(f"Audio: {output_path.name} ({output_path.stat().st_size / 1024:.0f} KB)")
 
 
-def _chunk_text(text: str, max_len: int) -> list[str]:
+def _split_oversized_sentence(sentence: str, max_len: int) -> list[str]:
+    """Break a single sentence longer than ``max_len`` into shorter fragments.
+
+    Google Chirp3 HD rejects any individual sentence over an internal length cap
+    with ``400 ... sentences that are too long`` — independent of the 5000-byte
+    per-request limit, so byte-level chunking alone can't prevent it. We split at
+    clause boundaries (comma / semicolon / colon / standalone dash) first and
+    fall back to word boundaries, then terminate each fragment with a period so
+    the engine reads them as complete sentences. Sentences already within the cap
+    pass through untouched (Polly and most prose never trigger this).
+    """
+    if len(sentence) <= max_len:
+        return [sentence]
+
+    # Reserve one char so a fragment + appended terminator still fits max_len.
+    budget = max_len - 1
+    parts = re.split(r"(?<=[,;:])\s+|\s+[—–-]\s+", sentence)
+    frags: list[str] = []
+    current = ""
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if len(part) > budget:
+            # A single clause is still too long → pack it word-by-word.
+            if current:
+                frags.append(current)
+                current = ""
+            word_cur = ""
+            for word in part.split():
+                if word_cur and len(word_cur) + len(word) + 1 > budget:
+                    frags.append(word_cur)
+                    word_cur = word
+                else:
+                    word_cur = f"{word_cur} {word}" if word_cur else word
+            if word_cur:
+                frags.append(word_cur)
+        elif current and len(current) + len(part) + 1 > budget:
+            frags.append(current)
+            current = part
+        else:
+            current = f"{current} {part}" if current else part
+    if current:
+        frags.append(current)
+
+    out = []
+    for f in frags:
+        f = f.rstrip(" ,;:—–-")
+        if not f:
+            continue
+        out.append(f if f[-1] in ".!?" else f"{f}.")
+    return out or [sentence]
+
+
+def _chunk_text(text: str, max_len: int, max_sentence_len: int | None = None) -> list[str]:
     sentences = re.split(r"(?<=[.!?])\s+", text)
+    if max_sentence_len:
+        expanded: list[str] = []
+        for s in sentences:
+            expanded.extend(_split_oversized_sentence(s, max_sentence_len))
+        sentences = expanded
     chunks, current = [], ""
     for s in sentences:
         if len(current) + len(s) + 1 > max_len and current:
