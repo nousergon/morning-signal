@@ -82,8 +82,8 @@ def opening_line(edition: str, weekend: bool) -> str:
     post-processing. Previously sent as an assistant-turn prefill, but
     that combination with the ``web_search`` server tool is rejected
     by Anthropic — the producer-side guard now lives in
-    ``alpha_engine_lib.anthropic_payload.validate_payload`` (lib
-    v0.38.1+, ROADMAP L242). ``build_messages_payload`` runs the
+    ``morning_signal._vendor.nousergon.anthropic_payload.validate_payload``
+    (vendored from MIT-era nousergon-lib). ``build_messages_payload`` runs the
     validator at construction time so any future regression that
     re-introduces the prefill+server-tool combo fails loud at PR time.
     """

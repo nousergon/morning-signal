@@ -1,6 +1,7 @@
-# LLM cost rate card — default pricing shipped with alpha_engine_lib.
+# LLM cost rate card — default pricing shipped with nousergon-lib
+# (vendored here from the MIT-era source).
 #
-# Loaded by ``alpha_engine_lib.cost.load_default_pricing``. Consumers that
+# Loaded by ``morning_signal._vendor.nousergon.cost.load_default_pricing``. Consumers that
 # need their own operator-managed rate card (e.g. alpha-engine-research)
 # should keep using ``load_pricing(path)`` with an external YAML; this
 # file is the sensible default for new consumers (morning-signal and
