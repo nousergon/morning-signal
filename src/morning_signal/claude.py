@@ -7,11 +7,11 @@ import re
 import sys
 from datetime import datetime
 
-from morning_signal._vendor.nousergon.anthropic_payload import (
+from krepis.anthropic_payload import (
     build_messages_payload,
     build_web_search_tool,
 )
-from morning_signal._vendor.nousergon.trading_calendar import is_trading_day
+from krepis.trading_calendar import is_trading_day
 
 from morning_signal import config as _config
 from morning_signal.config import load_prompt
@@ -82,8 +82,8 @@ def opening_line(edition: str, weekend: bool) -> str:
     post-processing. Previously sent as an assistant-turn prefill, but
     that combination with the ``web_search`` server tool is rejected
     by Anthropic — the producer-side guard now lives in
-    ``morning_signal._vendor.nousergon.anthropic_payload.validate_payload``
-    (vendored from MIT-era nousergon-lib). ``build_messages_payload`` runs the
+    ``krepis.anthropic_payload.validate_payload``
+    (from the MIT krepis library). ``build_messages_payload`` runs the
     validator at construction time so any future regression that
     re-introduces the prefill+server-tool combo fails loud at PR time.
     """

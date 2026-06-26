@@ -95,7 +95,7 @@ def send_alert(config: dict, edition: str, message: str) -> bool:
     Returns True if a message was sent. No-op (returns False) when
     notifications are disabled or the Telegram creds aren't resolvable —
     same posture as ``notify.make_doctor``. The box deployment does NOT rely
-    on this path (it alerts via ``nousergon_lib.alerts`` from an identity
+    on this path (it alerts via ``krepis.alerts`` from an identity
     independent of the runner role, so a runner-role failure still pages);
     this exists so OSS self-hosters get an alert from ``--notify`` alone.
     """

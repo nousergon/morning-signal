@@ -33,17 +33,14 @@ dependencies = [
     "typer>=0.12.0",
     # Telegram-routed failure + healthy-completion pings.
     "flow-doctor==0.5.0",
-    # pydantic backs the vendored cost-telemetry + ModelMetadata models.
-    # The three commodity utilities morning-signal used (anthropic_payload,
-    # cost, trading_calendar) were VENDORED from MIT-era nousergon-lib
-    # (<= 0.59.8) into src/morning_signal/_vendor/nousergon/ when the lib
-    # relicensed to AGPL-3.0-only at 0.60.0 — morning-signal is MIT and must
-    # not carry an AGPL dependency. See _vendor/nousergon/__init__.py for the
-    # strip plan (swap to the future public MIT nousergon-core lib).
+    # The commodity utilities morning-signal uses (anthropic_payload, cost,
+    # trading_calendar) live in the public MIT `krepis` foundation library.
+    # morning-signal is MIT and depends down onto krepis (also MIT); the
+    # earlier vendored copies under _vendor/nousergon/ are removed.
+    "krepis>=0.1.2",
     "pydantic>=2.0",
     # Pydantic v2 cannot eval PEP 604 `str | None` field annotations under
-    # Python 3.9 even with `from __future__ import annotations`; the vendored
-    # cost/ModelMetadata models need this backport (mirrors nousergon-lib).
+    # Python 3.9 even with `from __future__ import annotations` (mirrors krepis).
     "eval_type_backport>=0.2.0; python_version < '3.10'",
 ]
 

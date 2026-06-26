@@ -36,7 +36,7 @@ from pathlib import Path
 # `python tests/live_api_smoke.py` from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from morning_signal._vendor.nousergon.anthropic_payload import (  # noqa: E402
+from krepis.anthropic_payload import (  # noqa: E402
     build_messages_payload,
     build_web_search_tool,
 )
@@ -57,9 +57,9 @@ def _build_smoke_payload() -> dict:
     server-tool (``web_search_20250305`` + ``max_uses=20``), cached
     system block, single user message with the opener instruction
     embedded, NO assistant prefill. Routes through
-    ``morning_signal._vendor.nousergon.anthropic_payload.build_messages_payload``
+    ``krepis.anthropic_payload.build_messages_payload``
     so any future drift between the smoke and the production validator
-    surfaces here too — the vendored ``validate_payload`` runs at
+    surfaces here too — the krepis ``validate_payload`` runs at
     construction time.
     """
     edition = "am"

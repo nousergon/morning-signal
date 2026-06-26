@@ -22,7 +22,7 @@ shape with ``max_tokens=1``, dispatches a single
 ``messages.create()`` call (~$0.001), and exits 0/1.
 
 Exit codes:
-  0 — payload validated by ``morning_signal._vendor.nousergon.anthropic_payload`` AND
+  0 — payload validated by ``krepis.anthropic_payload`` AND
       accepted by the Anthropic API at runtime.
   1 — validation failure, HTTP 4xx (the canonical regression class),
       missing API key, or any unexpected error.
@@ -46,7 +46,7 @@ from pathlib import Path
 # ``.venv/bin/python scripts/canary.py`` from the systemd unit).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from morning_signal._vendor.nousergon.anthropic_payload import (  # noqa: E402
+from krepis.anthropic_payload import (  # noqa: E402
     build_messages_payload,
     build_web_search_tool,
 )
