@@ -1,9 +1,9 @@
 """Per-call Anthropic cost telemetry sink for morning-signal episodes.
 
 Thin wrapper around
-:func:`morning_signal._vendor.nousergon.cost.record_anthropic_call`
-(the capture chokepoint, vendored from MIT-era nousergon-lib). Stamps
-``date`` + ``edition`` onto the vendored helper's JSONL record + writes
+:func:`krepis.cost.record_anthropic_call`
+(the capture chokepoint, from the MIT krepis library). Stamps
+``date`` + ``edition`` onto the krepis helper's JSONL record + writes
 one line per call to::
 
     episodes/{date}-{edition}.cost.jsonl
@@ -12,7 +12,7 @@ Token + request counts are immutable facts; ``cost_usd`` is derived.
 If Anthropic changes pricing later, historical records can be repriced
 by replaying the JSONL against an updated ``PriceTable`` /
 ``ToolFeeTable`` without re-running any episodes — see
-``morning_signal._vendor.nousergon.cost.recompute_cost``.
+``krepis.cost.recompute_cost``.
 
 One JSONL line per ``messages.create`` call. The current monolithic
 generator emits one call per episode (so one line per file). Forward-
@@ -27,7 +27,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from morning_signal._vendor.nousergon.cost import record_anthropic_call
+from krepis.cost import record_anthropic_call
 
 if TYPE_CHECKING:
     from anthropic.types import Message
