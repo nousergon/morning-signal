@@ -57,9 +57,9 @@ def _build_smoke_payload() -> dict:
     server-tool (``web_search_20250305`` + ``max_uses=20``), cached
     system block, single user message with the opener instruction
     embedded, NO assistant prefill. Routes through
-    ``alpha_engine_lib.anthropic_payload.build_messages_payload`` so
-    any future drift between the smoke and the production validator
-    surfaces here too — the lib's ``validate_payload`` runs at
+    ``morning_signal._vendor.nousergon.anthropic_payload.build_messages_payload``
+    so any future drift between the smoke and the production validator
+    surfaces here too — the vendored ``validate_payload`` runs at
     construction time.
     """
     edition = "am"

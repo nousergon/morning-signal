@@ -1,9 +1,10 @@
 """Per-call Anthropic cost telemetry sink for morning-signal episodes.
 
-Thin wrapper around :func:`alpha_engine_lib.cost.record_anthropic_call`
-(the lib-side capture chokepoint lifted in v0.33.0 from the original
-shape of this module). Stamps ``date`` + ``edition`` onto the lib's
-JSONL record + writes one line per call to::
+Thin wrapper around
+:func:`morning_signal._vendor.nousergon.cost.record_anthropic_call`
+(the capture chokepoint, vendored from MIT-era nousergon-lib). Stamps
+``date`` + ``edition`` onto the vendored helper's JSONL record + writes
+one line per call to::
 
     episodes/{date}-{edition}.cost.jsonl
 
@@ -11,7 +12,7 @@ Token + request counts are immutable facts; ``cost_usd`` is derived.
 If Anthropic changes pricing later, historical records can be repriced
 by replaying the JSONL against an updated ``PriceTable`` /
 ``ToolFeeTable`` without re-running any episodes — see
-``alpha_engine_lib.cost.recompute_cost``.
+``morning_signal._vendor.nousergon.cost.recompute_cost``.
 
 One JSONL line per ``messages.create`` call. The current monolithic
 generator emits one call per episode (so one line per file). Forward-

@@ -22,7 +22,7 @@ shape with ``max_tokens=1``, dispatches a single
 ``messages.create()`` call (~$0.001), and exits 0/1.
 
 Exit codes:
-  0 — payload validated by ``alpha_engine_lib.anthropic_payload`` AND
+  0 — payload validated by ``morning_signal._vendor.nousergon.anthropic_payload`` AND
       accepted by the Anthropic API at runtime.
   1 — validation failure, HTTP 4xx (the canonical regression class),
       missing API key, or any unexpected error.

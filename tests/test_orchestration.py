@@ -306,10 +306,11 @@ def test_opening_line_variants(fresh_ge_module):
 #
 # Pre-2026-05-27 the producer-side validator lived as a local
 # ``_validate_request_payload`` in morning_signal/claude.py (shipped in
-# PR #34). The 2026-05-27 L242 lift consolidated it into
-# ``alpha_engine_lib.anthropic_payload.validate_payload`` (lib v0.38.1+);
-# the local validator was deleted in the same PR. These tests now drive
-# the lib chokepoint directly — the contract is identical (server tool
+# PR #34). The 2026-05-27 L242 lift consolidated it into the shared
+# payload validator (``validate_payload``), later vendored to
+# ``morning_signal._vendor.nousergon.anthropic_payload``; the local
+# validator was deleted in the same PR. These tests now drive the
+# vendored chokepoint directly — the contract is identical (server tool
 # + trailing assistant prefill → raise), so the invariant assertions
 # are unchanged in spirit; only the import path and the raised
 # exception type differ (PayloadInvariantError, a ValueError subclass,
