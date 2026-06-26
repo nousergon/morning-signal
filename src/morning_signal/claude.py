@@ -28,6 +28,48 @@ log = logging.getLogger("morning-signal")
 EDITION_LABELS = {"am": "MORNING", "pm": "EVENING"}
 
 
+def _alert_degraded_coverage(
+    config: dict,
+    edition: str,
+    edition_label: str,
+    date_str: str,
+    unmet: list[str],
+    n_searches: int,
+    budget: int,
+) -> None:
+    """Fire a flow-doctor/Telegram alert for an episode that shipped with one
+    or more required search topics uncovered (see the degraded-coverage policy
+    in :func:`generate_script`).
+
+    Best-effort by construction: ``watchdog.send_alert`` already no-ops when
+    notifications are disabled / creds are missing, and we additionally guard
+    the whole call so an alerting bug can NEVER block the publish path. A
+    send failure is logged at WARNING (so it is still a recorded surface, not
+    a silent swallow) — the episode ships either way.
+    """
+    topics = "\n".join(f"  • {t}" for t in unmet)
+    message = (
+        f"⚠️ morning-signal {edition_label} edition for {date_str} "
+        f"PUBLISHED WITH DEGRADED COVERAGE.\n\n"
+        f"Required search topic(s) NOT covered by live web search "
+        f"(likely written from memory rather than today's news):\n"
+        f"{topics}\n\n"
+        f"Ran {n_searches} web search(es); budget web_search_max_uses={budget}.\n"
+        f"Triage: raise web_search_max_uses, revisit the segment prompt, or "
+        f"adjust the required_search_topics keyword matchers. The episode "
+        f"still shipped — fix forward."
+    )
+    try:
+        from morning_signal.watchdog import send_alert
+
+        send_alert(config, edition, message)
+    except Exception:  # noqa: BLE001 — alerting must never block publish
+        log.warning(
+            "DEGRADED COVERAGE alert failed to send (continuing to publish)",
+            exc_info=True,
+        )
+
+
 def is_non_trading_day(date_str: str) -> bool:
     """True for Sat/Sun + NYSE holidays. Drives prompt + PM-skip selection."""
     return not is_trading_day(datetime.strptime(date_str, "%Y-%m-%d").date())
@@ -162,7 +204,7 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
             f"for {date_str}-{edition} — aborting before publish"
         )
 
-    # Fail-loud per-segment guard: the global ``min_web_searches`` floor only
+    # Per-segment coverage guard: the global ``min_web_searches`` floor only
     # asserts the edition was grounded *somewhere*; it does NOT guarantee a
     # *specific* search-critical segment was covered. The failure mode this
     # catches (2026-06-17): with a tight ``web_search_max_uses`` budget the
@@ -176,25 +218,55 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     # to specific editions (``editions: [...]``) so a weekday-only segment does
     # not falsely abort the "weekend" edition, which runs a different prompt
     # with different segments and legitimately never searches it.
+    #
+    # Degraded-coverage policy (2026-06-26, Brian): an uncovered segment is a
+    # QUALITY defect, not grounds to withhold the whole episode — every OTHER
+    # segment is fully grounded in live news, so a daily pod shipped with one
+    # stale segment beats no pod at all. So the DEFAULT is publish-anyway +
+    # alert: we log a WARNING and fire a flow-doctor/Telegram alert naming the
+    # uncovered topics for async triage, then fall through to publish. This is
+    # NOT a silent swallow (per fail-loud policy): (a) the swallowed failure
+    # mode is a required segment likely written from memory; (b) the primary
+    # deliverable — the episode — survives and ships; (c) the recording
+    # surfaces are a WARN log + a Telegram alert. Operators who would rather
+    # skip than ship a stale segment (the 2026-06-16 digest-hallucination
+    # posture) set ``required_search_topics_fatal: true`` to restore the hard
+    # abort. NOTE: the global ``min_web_searches`` floor above stays HARD
+    # regardless — a near-zero-search edition is hallucinated wholesale, a
+    # different and unrecoverable failure.
     required_topics = config.get("required_search_topics") or []
     if required_topics:
         effective_edition = "weekend" if weekend else edition
+        searches = extract_searches(response)
         unmet = unmet_required_topics(
-            extract_searches(response), required_topics, edition=effective_edition
+            searches, required_topics, edition=effective_edition
         )
         if unmet:
-            log.error(
-                f"ABORT: {edition_label} edition for {friendly_date} did not "
-                f"web-search these required topic(s): {', '.join(unmet)}. The "
-                f"global search floor was met but a search-critical segment "
-                f"was skipped — almost certainly written from memory rather "
-                f"than live news. Refusing to publish. Raise "
-                f"web_search_max_uses so there is search budget for every "
-                f"segment, or adjust required_search_topics to opt out."
+            if config.get("required_search_topics_fatal", False):
+                log.error(
+                    f"ABORT: {edition_label} edition for {friendly_date} did "
+                    f"not web-search these required topic(s): "
+                    f"{', '.join(unmet)}. The global search floor was met but "
+                    f"a search-critical segment was skipped — almost certainly "
+                    f"written from memory. required_search_topics_fatal=true → "
+                    f"refusing to publish."
+                )
+                raise RuntimeError(
+                    f"required search topic(s) not covered: {', '.join(unmet)} "
+                    f"for {date_str}-{edition} — aborting before publish"
+                )
+            budget = config.get("web_search_max_uses", 20)
+            log.warning(
+                f"DEGRADED COVERAGE: {edition_label} edition for "
+                f"{friendly_date} did not web-search required topic(s): "
+                f"{', '.join(unmet)} (ran {len(searches)} search(es), budget "
+                f"web_search_max_uses={budget}). Publishing anyway + alerting "
+                f"for async triage. Set required_search_topics_fatal=true to "
+                f"hard-abort instead."
             )
-            raise RuntimeError(
-                f"required search topic(s) not covered: {', '.join(unmet)} "
-                f"for {date_str}-{edition} — aborting before publish"
+            _alert_degraded_coverage(
+                config, effective_edition, edition_label, date_str,
+                unmet, len(searches), budget,
             )
 
     script = _final_text_after_last_tool(response.content)

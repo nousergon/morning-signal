@@ -66,8 +66,17 @@ min_web_searches: 1
 # searches on the earlier segments and reaches a no-digest segment (one with no
 # pre-fetched fallback) with no budget left, then writes it from memory. Declare
 # a topic per such segment, listing keywords any of which a search query must
-# contain; if fewer than ``min_matches`` (default 1) searches hit a topic,
-# generation ABORTS before publish. Default: none (no-op).
+# contain; if fewer than ``min_matches`` (default 1) searches hit a topic, the
+# topic is "uncovered". Default: none (no-op).
+#
+# When a topic is uncovered the DEFAULT is publish-anyway + alert: the episode
+# still ships (every other segment is grounded), and a flow-doctor/Telegram
+# notification names the uncovered topics for async triage. Set
+# ``required_search_topics_fatal: true`` to restore the legacy behaviour —
+# ABORT before publish — for deployments that would rather skip an edition than
+# ship one stale segment. (The global ``min_web_searches`` floor always hard-
+# aborts regardless: a near-zero-search edition is hallucinated wholesale.)
+# required_search_topics_fatal: false
 #
 # ``editions`` (optional) scopes a topic to specific editions — useful when a
 # weekday edition has a segment (e.g. a political pulse) that the "weekend"

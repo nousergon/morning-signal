@@ -491,6 +491,97 @@ def test_generate_script_zero_search_allowed_when_floor_disabled(fresh_ge_module
     assert out.startswith("Welcome to Morning Signal.")
 
 
+# ── per-segment coverage guard (degraded-coverage policy 2026-06-26) ──────────
+
+
+def test_generate_script_publishes_with_alert_when_required_topic_unmet(
+    fresh_ge_module, tmp_path
+):
+    """Degraded-coverage policy (2026-06-26): an uncovered required search
+    topic is a quality defect, NOT grounds to withhold the episode. The
+    DEFAULT behaviour is publish-anyway + fire a flow-doctor/Telegram alert
+    naming the uncovered topics — never raise. The global search floor was
+    met (record_searches >= floor), so only a specific segment is stale.
+    """
+    prompt_path = tmp_path / "p.md"
+    prompt_path.write_text("prompt")
+
+    sent: list[tuple] = []
+
+    anth_mock, _ = _make_anthropic_mock("Mostly grounded body.")
+    with patch.dict(sys.modules, {"anthropic": anth_mock}), \
+         patch.object(_config, "PROMPT_FILE", prompt_path), \
+         patch.object(_claude, "record_searches", return_value=8), \
+         patch.object(_claude, "extract_searches", return_value=[{"query": "spy"}]), \
+         patch.object(
+             _claude, "unmet_required_topics",
+             return_value=["MAGA Pulse", "Anti-MAGA / Heterodox-Right Pulse"],
+         ), \
+         patch(
+             "morning_signal.watchdog.send_alert",
+             side_effect=lambda *a, **kw: sent.append((a, kw)) or True,
+         ):
+        out = fresh_ge_module.generate_script(
+            {
+                "claude_model": "x",
+                "max_tokens": 1,
+                "min_web_searches": 6,
+                "required_search_topics": [{"name": "MAGA Pulse", "keywords": ["maga"]}],
+            },
+            "2026-06-26",
+            "am",
+        )
+
+    # Episode shipped (no raise) with the canonical opener prepended.
+    assert out.startswith("Welcome to Morning Signal.")
+    assert "Mostly grounded body." in out
+    # Exactly one degraded-coverage alert fired, naming the uncovered topics.
+    assert len(sent) == 1
+    alert_args, _ = sent[0]
+    message = alert_args[2]  # send_alert(config, edition, message)
+    assert "DEGRADED COVERAGE" in message
+    assert "MAGA Pulse" in message
+    assert "Anti-MAGA / Heterodox-Right Pulse" in message
+
+
+def test_generate_script_required_topics_fatal_flag_restores_abort(
+    fresh_ge_module, tmp_path
+):
+    """``required_search_topics_fatal: true`` restores the legacy hard-abort
+    for operators who would rather skip than ship a stale segment. In that
+    mode generate_script MUST raise BEFORE returning and MUST NOT send the
+    degraded-coverage alert (nothing shipped, so nothing to triage-after).
+    """
+    prompt_path = tmp_path / "p.md"
+    prompt_path.write_text("prompt")
+
+    sent: list[tuple] = []
+
+    anth_mock, _ = _make_anthropic_mock("body")
+    with patch.dict(sys.modules, {"anthropic": anth_mock}), \
+         patch.object(_config, "PROMPT_FILE", prompt_path), \
+         patch.object(_claude, "record_searches", return_value=8), \
+         patch.object(_claude, "extract_searches", return_value=[{"query": "spy"}]), \
+         patch.object(_claude, "unmet_required_topics", return_value=["MAGA Pulse"]), \
+         patch(
+             "morning_signal.watchdog.send_alert",
+             side_effect=lambda *a, **kw: sent.append((a, kw)) or True,
+         ):
+        with pytest.raises(RuntimeError, match="required search topic"):
+            fresh_ge_module.generate_script(
+                {
+                    "claude_model": "x",
+                    "max_tokens": 1,
+                    "min_web_searches": 6,
+                    "required_search_topics": [{"name": "MAGA Pulse", "keywords": ["maga"]}],
+                    "required_search_topics_fatal": True,
+                },
+                "2026-06-26",
+                "am",
+            )
+    assert sent == []  # no alert in hard-abort mode
+
+
 # ── main() orchestration ─────────────────────────────────────────────────────
 
 
