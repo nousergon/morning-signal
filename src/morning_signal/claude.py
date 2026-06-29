@@ -94,6 +94,110 @@ def opening_line(edition: str, weekend: bool) -> str:
     return "Welcome to Morning Signal."
 
 
+def _invoke_and_record(
+    client,
+    config: dict,
+    prompt_text: str,
+    user_content: str,
+    tools: list,
+    date_str: str,
+    edition: str,
+    tool_choice: dict | None = None,
+):
+    """Run one ``messages.create`` generation pass and record its telemetry.
+
+    Returns ``(response, n_searches)``. Factored out of :func:`generate_script`
+    so the self-healing recovery pass can re-invoke the model with an escalated
+    user message under the SAME payload contract. Cost + per-search telemetry
+    append to the episode's JSONL sinks on every call, so a recovery pass is
+    captured as an additional billed call (accurate cost record), not hidden.
+
+    ``tool_choice`` (when provided) is injected into the payload to FORCE a
+    tool call — used by the recovery pass to deterministically force a
+    ``web_search`` (``{"type": "tool", "name": "web_search"}``) rather than
+    merely asking for one in prose. Verified against the live API
+    (2026-06-29): forcing the server-side ``web_search`` is accepted (HTTP
+    200, no 400) and the model still writes its full script after the forced
+    search. ``build_messages_payload`` does not expose ``tool_choice``, so we
+    set it on the returned payload dict directly.
+
+    ``build_messages_payload`` runs ``validate_payload`` internally — the
+    server-tool ⊥ assistant-prefill invariant is enforced at lib level.
+    """
+    payload = build_messages_payload(
+        model=config.get("claude_model", "claude-sonnet-4-6"),
+        system_prompt=prompt_text,
+        user_content=user_content,
+        max_tokens=config.get("max_tokens", 4096),
+        tools=tools,
+        cache_system=True,
+    )
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    response = client.messages.create(**payload)
+    record_call_cost(
+        msg=response,
+        date_str=date_str,
+        edition=edition,
+        episodes_dir=_config.EPISODES_DIR,
+    )
+    n_searches = record_searches(
+        msg=response,
+        date_str=date_str,
+        edition=edition,
+        episodes_dir=_config.EPISODES_DIR,
+    )
+    return response, n_searches
+
+
+def _coverage_recovery_directive(
+    unmet: list[str],
+    required_topics: list[dict],
+    edition: str,
+) -> str:
+    """Build the escalated user-message addendum for a recovery regeneration.
+
+    Names each uncovered segment plus its keyword figures (so the model knows
+    exactly who to cover) and mandates a dedicated search + written segment for
+    each. Appended to the original user message so the model still produces the
+    COMPLETE edition, not just the missing segments (the script is a single
+    header-less monologue — splicing fragments in is brittle).
+    """
+    by_name: dict[str, dict] = {}
+    for t in required_topics:
+        kws = [str(k) for k in (t.get("keywords") or []) if str(k).strip()]
+        name = str(t.get("name") or ", ".join(kws))
+        by_name[name] = t
+
+    lines = []
+    for name in unmet:
+        kws = [str(k) for k in (by_name.get(name, {}).get("keywords") or []) if str(k).strip()]
+        figures = ", ".join(kws)
+        if figures:
+            lines.append(
+                f"  - {name}: run at least one dedicated web search covering "
+                f"{figures}, then write its segment."
+            )
+        else:
+            lines.append(
+                f"  - {name}: run at least one dedicated web search, then "
+                f"write its segment."
+            )
+    segments = "\n".join(lines)
+
+    return (
+        "\n\nCRITICAL COVERAGE CORRECTION. A prior draft of this exact "
+        "edition OMITTED the following required segment(s) — they were not "
+        "searched and not written. You MUST fix this now:\n"
+        f"{segments}\n"
+        "For EACH segment listed above: issue at least one dedicated web "
+        "search for it BEFORE writing, and include a substantive spoken "
+        "segment for it in today's script. Never write these from memory and "
+        "never drop them. Produce the COMPLETE edition with every segment in "
+        "order — not just the missing ones."
+    )
+
+
 def generate_script(config: dict, date_str: str, edition: str) -> str:
     """Call Claude with web search to generate the podcast script.
 
@@ -153,30 +257,8 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
         f"{opener}"
     )
 
-    # build_messages_payload runs validate_payload internally — the
-    # server-tool ⊥ assistant-prefill invariant is enforced at lib level.
-    payload = build_messages_payload(
-        model=config.get("claude_model", "claude-sonnet-4-6"),
-        system_prompt=prompt_text,
-        user_content=user_content,
-        max_tokens=config.get("max_tokens", 4096),
-        tools=tools,
-        cache_system=True,
-    )
-
-    response = client.messages.create(**payload)
-
-    record_call_cost(
-        msg=response,
-        date_str=date_str,
-        edition=edition,
-        episodes_dir=_config.EPISODES_DIR,
-    )
-    n_searches = record_searches(
-        msg=response,
-        date_str=date_str,
-        edition=edition,
-        episodes_dir=_config.EPISODES_DIR,
+    response, n_searches = _invoke_and_record(
+        client, config, prompt_text, user_content, tools, date_str, edition
     )
 
     # Fail-loud guard: an edition that ran fewer than ``min_web_searches``
@@ -219,35 +301,102 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     # not falsely abort the "weekend" edition, which runs a different prompt
     # with different segments and legitimately never searches it.
     #
-    # Degraded-coverage policy (2026-06-26, Brian): an uncovered segment is a
-    # QUALITY defect, not grounds to withhold the whole episode — every OTHER
-    # segment is fully grounded in live news, so a daily pod shipped with one
-    # stale segment beats no pod at all. So the DEFAULT is publish-anyway +
-    # alert: we log a WARNING and fire a flow-doctor/Telegram alert naming the
-    # uncovered topics for async triage, then fall through to publish. This is
-    # NOT a silent swallow (per fail-loud policy): (a) the swallowed failure
-    # mode is a required segment likely written from memory; (b) the primary
-    # deliverable — the episode — survives and ships; (c) the recording
-    # surfaces are a WARN log + a Telegram alert. Operators who would rather
-    # skip than ship a stale segment (the 2026-06-16 digest-hallucination
-    # posture) set ``required_search_topics_fatal: true`` to restore the hard
-    # abort. NOTE: the global ``min_web_searches`` floor above stays HARD
-    # regardless — a near-zero-search edition is hallucinated wholesale, a
-    # different and unrecoverable failure.
+    # Coverage handling has three tiers, in order of preference:
+    #   1. SELF-HEAL (default) — if a required segment is uncovered, fire ONE
+    #      bounded recovery regeneration whose user message names the dropped
+    #      segment(s) and mandates a dedicated search + written segment for
+    #      each. Adopt the recovered draft only if it covers strictly more.
+    #      This actually FIXES the recurring political-segment drop (4th
+    #      occurrence 2026-06-29) instead of only alerting on it.
+    #   2. PUBLISH + ALERT (degraded-coverage policy, 2026-06-26, Brian) — if
+    #      recovery is disabled or still can't cover the segment, an uncovered
+    #      segment is a QUALITY defect, not grounds to withhold the whole
+    #      episode: every OTHER segment is grounded, so a pod with one stale
+    #      segment beats no pod. WARN log + flow-doctor/Telegram alert naming
+    #      the uncovered topics, then publish. NOT a silent swallow (fail-loud
+    #      policy): (a) the swallowed mode is a segment likely written from
+    #      memory; (b) the episode still ships; (c) the surfaces are a WARN log
+    #      + a Telegram alert.
+    #   3. HARD ABORT — operators who would rather skip than ship a stale
+    #      segment (the 2026-06-16 digest-hallucination posture) set
+    #      ``required_search_topics_fatal: true``; recovery still runs first,
+    #      so we abort only when even the forced retry could not cover it.
+    # Coverage is judged with the SCRIPT in hand (not just search telemetry):
+    # a topic counts as covered only when it was both searched AND its segment
+    # actually aired — closing the blind spot where another segment's search
+    # (e.g. "Elon Musk / SpaceX") falsely satisfied a political topic. The
+    # global ``min_web_searches`` floor above stays HARD regardless — a
+    # near-zero-search edition is hallucinated wholesale, a different and
+    # unrecoverable failure.
     required_topics = config.get("required_search_topics") or []
     if required_topics:
         effective_edition = "weekend" if weekend else edition
-        searches = extract_searches(response)
+        fatal = config.get("required_search_topics_fatal", False)
+        recover = config.get("required_search_topics_recover", True)
+        script_text = _final_text_after_last_tool(response.content)
         unmet = unmet_required_topics(
-            searches, required_topics, edition=effective_edition
+            extract_searches(response), required_topics,
+            edition=effective_edition, script=script_text,
         )
+
+        if unmet and recover:
+            log.warning(
+                f"DEGRADED COVERAGE on first pass for {edition_label} edition "
+                f"({friendly_date}): {', '.join(unmet)}. Firing one targeted "
+                f"recovery regeneration that forces these segment(s)."
+            )
+            directive = _coverage_recovery_directive(
+                unmet, required_topics, effective_edition
+            )
+            # Deterministically FORCE a web_search on the recovery pass rather
+            # than only asking for one in prose — the prose ask is the same
+            # stochastic compliance that already failed on the first pass. The
+            # web_search tool name comes from the tool definition so it stays
+            # in sync with build_web_search_tool. (Forcing the server-side
+            # web_search is API-supported — verified live 2026-06-29.)
+            force_search = {
+                "type": "tool",
+                "name": tools[0].get("name", "web_search") if tools else "web_search",
+            }
+            try:
+                r2, n2 = _invoke_and_record(
+                    client, config, prompt_text, user_content + directive,
+                    tools, date_str, edition, tool_choice=force_search,
+                )
+                script2 = _final_text_after_last_tool(r2.content)
+                unmet2 = unmet_required_topics(
+                    extract_searches(r2), required_topics,
+                    edition=effective_edition, script=script2,
+                )
+                if len(unmet2) < len(unmet):
+                    log.info(
+                        f"Recovery improved coverage for {edition_label} "
+                        f"edition ({friendly_date}): {len(unmet)}→"
+                        f"{len(unmet2)} uncovered "
+                        f"(now: {', '.join(unmet2) or 'all covered'})."
+                    )
+                    response, n_searches, unmet = r2, n2, unmet2
+                else:
+                    log.warning(
+                        f"Recovery did not improve coverage for "
+                        f"{edition_label} edition ({friendly_date}): still "
+                        f"{len(unmet2)} uncovered ({', '.join(unmet2)}). "
+                        f"Keeping the original draft."
+                    )
+            except Exception:  # noqa: BLE001 — recovery must never block publish
+                log.warning(
+                    "Recovery regeneration failed; keeping the original "
+                    "degraded draft and falling through to alert.",
+                    exc_info=True,
+                )
+
         if unmet:
-            if config.get("required_search_topics_fatal", False):
+            if fatal:
                 log.error(
                     f"ABORT: {edition_label} edition for {friendly_date} did "
-                    f"not web-search these required topic(s): "
-                    f"{', '.join(unmet)}. The global search floor was met but "
-                    f"a search-critical segment was skipped — almost certainly "
+                    f"not cover required topic(s): {', '.join(unmet)} (even "
+                    f"after recovery). The global search floor was met but a "
+                    f"search-critical segment was skipped — almost certainly "
                     f"written from memory. required_search_topics_fatal=true → "
                     f"refusing to publish."
                 )
@@ -258,15 +407,14 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
             budget = config.get("web_search_max_uses", 20)
             log.warning(
                 f"DEGRADED COVERAGE: {edition_label} edition for "
-                f"{friendly_date} did not web-search required topic(s): "
-                f"{', '.join(unmet)} (ran {len(searches)} search(es), budget "
-                f"web_search_max_uses={budget}). Publishing anyway + alerting "
-                f"for async triage. Set required_search_topics_fatal=true to "
-                f"hard-abort instead."
+                f"{friendly_date} shipped without covering required topic(s): "
+                f"{', '.join(unmet)} (budget web_search_max_uses={budget}). "
+                f"Publishing anyway + alerting for async triage. Set "
+                f"required_search_topics_fatal=true to hard-abort instead."
             )
             _alert_degraded_coverage(
                 config, effective_edition, edition_label, date_str,
-                unmet, len(searches), budget,
+                unmet, n_searches, budget,
             )
 
     script = _final_text_after_last_tool(response.content)

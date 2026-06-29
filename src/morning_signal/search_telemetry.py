@@ -133,6 +133,7 @@ def unmet_required_topics(
     searches: list[dict[str, Any]],
     required_topics: list[dict[str, Any]],
     edition: str | None = None,
+    script: str | None = None,
 ) -> list[str]:
     """Return the names of required search topics that were under-covered.
 
@@ -142,6 +143,24 @@ def unmet_required_topics(
     catch the failure mode where a global search floor is met but a *specific*
     segment — typically one with no pre-fetched-digest fallback — is silently
     skipped and written from training memory instead of live news.
+
+    A topic is *covered* only when BOTH hold:
+
+    1. **Searched** — at least ``min_matches`` web-search queries contain one
+       of the topic's keywords (the segment was grounded in live news).
+    2. **Aired** — when ``script`` is provided, at least one keyword also
+       appears in the final spoken script (the segment was actually written,
+       not searched-then-dropped, and not merely satisfied by an unrelated
+       segment's search).
+
+    Passing ``script=None`` (the default) checks condition 1 only, preserving
+    the original search-telemetry-only contract for callers that don't have
+    the script. Requiring BOTH closes the blind spot (2026-06-29) where a
+    keyword that legitimately appears in *another* segment's search — e.g. an
+    "Elon Musk / SpaceX" markets search satisfying a *political* "Techno-MAGA"
+    topic — silently passed the guard while that topic's dedicated segment was
+    never written. With ``script`` supplied, a topic only counts as covered
+    when its own segment demonstrably aired.
 
     The engine ships NO built-in topics (the default is an empty list, a
     no-op): which segments are search-critical is the operator's editorial
@@ -169,10 +188,12 @@ def unmet_required_topics(
     inert (every topic enforced) — callers that don't track editions keep the
     original behavior.
 
-    Returns the list of topic ``name``s whose match count fell below
-    ``min_matches`` (empty list = every required topic covered).
+    Returns the list of topic ``name``s that were under-covered — either not
+    searched ``min_matches`` times, or (when ``script`` is given) searched but
+    absent from the spoken script (empty list = every required topic covered).
     """
     queries = [str(s.get("query", "")).lower() for s in searches]
+    script_lc = script.lower() if isinstance(script, str) else None
     edition_lc = edition.lower() if isinstance(edition, str) else None
     unmet: list[str] = []
     for topic in required_topics:
@@ -187,6 +208,8 @@ def unmet_required_topics(
         matches = sum(
             1 for q in queries if any(kw in q for kw in keywords)
         )
-        if matches < min_matches:
+        searched = matches >= min_matches
+        aired = script_lc is None or any(kw in script_lc for kw in keywords)
+        if not (searched and aired):
             unmet.append(name)
     return unmet
