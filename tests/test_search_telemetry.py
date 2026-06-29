@@ -301,3 +301,46 @@ def test_edition_none_makes_scoping_inert():
     searches = _searches("markets only")
     topics = [{"name": "Political", "keywords": ["trump"], "editions": ["am"]}]
     assert unmet_required_topics(searches, topics) == ["Political"]
+
+
+# ── script presence: segment actually aired (2026-06-29 blind-spot fix) ───────
+
+
+def test_script_none_is_search_only_backcompat():
+    # No script → original search-telemetry-only behavior (every prior test
+    # above relies on this default).
+    searches = _searches("trump truth social posts")
+    topics = [{"name": "Trump", "keywords": ["trump"]}]
+    assert unmet_required_topics(searches, topics, script=None) == []
+
+
+def test_covered_when_searched_and_in_script():
+    searches = _searches("trump truth social posts today")
+    topics = [{"name": "Trump", "keywords": ["trump"]}]
+    script = "Welcome to Morning Signal. On Trump, he posted on Truth Social..."
+    assert unmet_required_topics(searches, topics, script=script) == []
+
+
+def test_searched_but_dropped_from_script_is_unmet():
+    # The blind spot: a keyword searched in ANOTHER segment's context (an
+    # "Elon Musk / SpaceX" markets search) no longer satisfies a political
+    # topic when that topic's own segment never aired.
+    searches = _searches("tesla elon musk spacex q2 earnings")  # markets
+    topics = [{"name": "Techno-MAGA", "keywords": ["david sacks", "chamath"]}]
+    script = "Welcome to Morning Signal. Markets mixed today. Seattle weather."
+    assert unmet_required_topics(searches, topics, script=script) == ["Techno-MAGA"]
+
+
+def test_in_script_but_not_searched_is_unmet():
+    # The original concern still holds: a segment written from memory (present
+    # in the script) without a grounding search is under-covered.
+    searches = _searches("spy futures only")
+    topics = [{"name": "Trump", "keywords": ["trump"]}]
+    script = "Welcome. Trump said something, written from memory, never searched."
+    assert unmet_required_topics(searches, topics, script=script) == ["Trump"]
+
+
+def test_script_match_is_case_insensitive():
+    searches = _searches("Trump Truth Social")
+    topics = [{"name": "Trump", "keywords": ["trump"]}]
+    assert unmet_required_topics(searches, topics, script="...TRUMP posted...") == []
