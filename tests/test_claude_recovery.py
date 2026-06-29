@@ -145,6 +145,16 @@ def test_recovery_user_message_names_the_dropped_segment(monkeypatch, patched):
     assert "CRITICAL COVERAGE CORRECTION" not in repr(client.messages.payloads[0])
 
 
+def test_recovery_forces_websearch_via_tool_choice(monkeypatch, patched):
+    _, client = _run(monkeypatch, [DEGRADED, RECOVERED], config=_base_config())
+    # First (natural) pass must NOT force a tool; recovery pass MUST force
+    # web_search via tool_choice so coverage is deterministic, not asked-for.
+    assert "tool_choice" not in client.messages.payloads[0]
+    assert client.messages.payloads[1]["tool_choice"] == {
+        "type": "tool", "name": "web_search",
+    }
+
+
 def test_recovery_failure_keeps_original_and_alerts(monkeypatch, patched):
     # Recovery pass ALSO drops MAGA → keep original draft, publish + alert.
     script, client = _run(monkeypatch, [DEGRADED, DEGRADED], config=_base_config())

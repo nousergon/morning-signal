@@ -80,8 +80,9 @@ min_web_searches: 1
 #
 # SELF-HEALING (default on): before the publish-or-abort decision, an uncovered
 # topic triggers ONE bounded recovery regeneration whose user message names the
-# dropped segment(s) + their keyword figures and mandates a dedicated search +
-# written segment for each. The recovered draft is adopted only if it covers
+# dropped segment(s) + their keyword figures, FORCES a dedicated web search via
+# tool_choice (not just an in-prose ask), and requires a written segment for
+# each. The recovered draft is adopted only if it covers
 # strictly more; otherwise the original draft falls through to the policy above.
 # Recovery runs even in fatal mode (so a hard-abort fires only when the forced
 # retry still can't cover). Coverage is judged with the SCRIPT in hand — a topic
