@@ -78,6 +78,18 @@ min_web_searches: 1
 # aborts regardless: a near-zero-search edition is hallucinated wholesale.)
 # required_search_topics_fatal: false
 #
+# SELF-HEALING (default on): before the publish-or-abort decision, an uncovered
+# topic triggers ONE bounded recovery regeneration whose user message names the
+# dropped segment(s) + their keyword figures and mandates a dedicated search +
+# written segment for each. The recovered draft is adopted only if it covers
+# strictly more; otherwise the original draft falls through to the policy above.
+# Recovery runs even in fatal mode (so a hard-abort fires only when the forced
+# retry still can't cover). Coverage is judged with the SCRIPT in hand — a topic
+# counts as covered only when it was both searched AND its segment actually
+# aired, so an unrelated segment's search can't falsely satisfy it. Set to false
+# to skip recovery and go straight to publish+alert / abort.
+# required_search_topics_recover: true
+#
 # ``editions`` (optional) scopes a topic to specific editions — useful when a
 # weekday edition has a segment (e.g. a political pulse) that the "weekend"
 # edition's prompt does not. Edition values are "am", "pm", and "weekend"
