@@ -102,6 +102,7 @@ def _invoke_and_record(
     tools: list,
     date_str: str,
     edition: str,
+    tool_choice: dict | None = None,
 ):
     """Run one ``messages.create`` generation pass and record its telemetry.
 
@@ -110,6 +111,15 @@ def _invoke_and_record(
     user message under the SAME payload contract. Cost + per-search telemetry
     append to the episode's JSONL sinks on every call, so a recovery pass is
     captured as an additional billed call (accurate cost record), not hidden.
+
+    ``tool_choice`` (when provided) is injected into the payload to FORCE a
+    tool call — used by the recovery pass to deterministically force a
+    ``web_search`` (``{"type": "tool", "name": "web_search"}``) rather than
+    merely asking for one in prose. Verified against the live API
+    (2026-06-29): forcing the server-side ``web_search`` is accepted (HTTP
+    200, no 400) and the model still writes its full script after the forced
+    search. ``build_messages_payload`` does not expose ``tool_choice``, so we
+    set it on the returned payload dict directly.
 
     ``build_messages_payload`` runs ``validate_payload`` internally — the
     server-tool ⊥ assistant-prefill invariant is enforced at lib level.
@@ -122,6 +132,8 @@ def _invoke_and_record(
         tools=tools,
         cache_system=True,
     )
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
     response = client.messages.create(**payload)
     record_call_cost(
         msg=response,
@@ -336,10 +348,20 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
             directive = _coverage_recovery_directive(
                 unmet, required_topics, effective_edition
             )
+            # Deterministically FORCE a web_search on the recovery pass rather
+            # than only asking for one in prose — the prose ask is the same
+            # stochastic compliance that already failed on the first pass. The
+            # web_search tool name comes from the tool definition so it stays
+            # in sync with build_web_search_tool. (Forcing the server-side
+            # web_search is API-supported — verified live 2026-06-29.)
+            force_search = {
+                "type": "tool",
+                "name": tools[0].get("name", "web_search") if tools else "web_search",
+            }
             try:
                 r2, n2 = _invoke_and_record(
                     client, config, prompt_text, user_content + directive,
-                    tools, date_str, edition,
+                    tools, date_str, edition, tool_choice=force_search,
                 )
                 script2 = _final_text_after_last_tool(r2.content)
                 unmet2 = unmet_required_topics(
