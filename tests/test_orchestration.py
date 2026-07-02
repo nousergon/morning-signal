@@ -109,22 +109,22 @@ def _make_anthropic_mock(text: str = "Generated script body."):
     """Build a fake anthropic.Anthropic client where messages.create returns
     a text block.
 
-    Note ``response.model`` + ``response.usage`` are populated with
-    real-typed values (not bare MagicMocks) so the cost-telemetry path —
-    which feeds ``response`` through ``metadata_from_anthropic_message``
-    → ``ModelMetadata`` (pydantic-validated) — accepts them. Without
-    this the int / str fields would receive MagicMock instances and
-    pydantic would raise on the first call.
+    Note ``response.usage`` is a REAL ``anthropic.types.Usage`` (and
+    ``response.model`` a real str) so the cost-telemetry path — which feeds
+    ``response`` through ``metadata_from_anthropic_message`` →
+    ``ModelMetadata`` (pydantic-validated) — sees the genuine field set with
+    genuine defaults. A hand-rolled MagicMock breaks every time krepis reads
+    a NEW usage field (bit 2026-07-02: krepis 0.7.0 added arithmetic on
+    ``usage.cache_creation``, which auto-materialized as a MagicMock →
+    ``TypeError`` in 16 tests). The real type is the ground truth; new SDK
+    fields arrive with their real defaults instead of Mocks.
     """
+    from anthropic.types import Usage
+
     block = MagicMock()
     block.type = "text"
     block.text = text
-    usage = MagicMock()
-    usage.input_tokens = 100
-    usage.output_tokens = 200
-    usage.cache_read_input_tokens = None
-    usage.cache_creation_input_tokens = None
-    usage.server_tool_use = None
+    usage = Usage(input_tokens=100, output_tokens=200)
     response = MagicMock()
     response.content = [block]
     response.model = "claude-sonnet-4-6"
