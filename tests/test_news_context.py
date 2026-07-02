@@ -296,17 +296,17 @@ def test_no_run_date_skips_staleness_check(aws_env):
 
 
 def _make_anthropic_mock(text: str = "Body."):
+    # Real anthropic.types.Usage (not a MagicMock) so krepis cost extraction
+    # sees genuine fields/defaults — a hand-rolled mock breaks whenever
+    # krepis reads a new usage field (see test_orchestration._make_anthropic_mock).
     from unittest.mock import MagicMock
+
+    from anthropic.types import Usage
 
     block = MagicMock()
     block.type = "text"
     block.text = text
-    usage = MagicMock()
-    usage.input_tokens = 100
-    usage.output_tokens = 200
-    usage.cache_read_input_tokens = None
-    usage.cache_creation_input_tokens = None
-    usage.server_tool_use = None
+    usage = Usage(input_tokens=100, output_tokens=200)
     response = MagicMock()
     response.content = [block]
     response.model = "claude-sonnet-4-6"
