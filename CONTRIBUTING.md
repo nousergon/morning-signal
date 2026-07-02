@@ -52,3 +52,13 @@ These are deliberately left for contributors — the maintainer runs the cloud p
 ## Pull requests
 
 Open a PR against `main` with a clear description and the test plan. CI (pytest matrix + coverage + CodeQL) must pass. A maintainer reviews and merges.
+
+## Licensing of contributions (DCO)
+
+All contributions are accepted under the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/) —
+sign off every commit with `git commit -s`, certifying that you wrote the
+code or otherwise have the right to submit it under the project's MIT
+license. No separate CLA. Inbound = outbound: contributions are licensed
+under the same MIT license that covers the project (see `LICENSE`); do not
+submit code you cannot license under MIT.
