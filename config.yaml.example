@@ -40,6 +40,17 @@ tts:
   google_max_sentence_chars: 400   # Chirp3 HD rejects any single sentence over its internal cap; we pre-split run-ons longer than this at clause boundaries (keep < ~500)
   speed: 1.0               # Playback speed multiplier; 1.0 = normal conversational pace, raise to 1.25–1.5 for fast brief
 
+# ── Schedule ────────────────────────────────────────────────────────────────
+# Dates to skip ENTIRELY (no episode, either edition) — travel days, vacations.
+# ISO YYYY-MM-DD strings; malformed entries fail loud at startup. Distinct from
+# the NYSE trading calendar (weekends/holidays still ship a weekend AM): a skip
+# date produces nothing, and the freshness watchdog treats the absent episode
+# as expected instead of alerting. `generate --force` overrides for a one-off.
+# skip_dates:
+#   - "2026-07-09"
+#   - "2026-07-10"
+skip_dates: []
+
 # ── Generation ──────────────────────────────────────────────────────────────
 claude_model: "claude-sonnet-4-6"  # Use the latest Sonnet for current Claude API
 max_tokens: 8192

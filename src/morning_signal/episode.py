@@ -213,6 +213,23 @@ def main():
     _config.EPISODES_DIR.mkdir(parents=True, exist_ok=True)
     _config.SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Operator skip dates (config `skip_dates:`) suppress BOTH editions —
+    # days the listener can't listen (travel, vacation). Clean no-op (exit 0,
+    # no failure email); the watchdog honors the same list so the absent
+    # episode doesn't page. `--force` is the explicit manual override for
+    # "actually, produce it anyway"; --publish-only stays allowed (feed
+    # rebuilds don't create an episode).
+    if (
+        not args.publish_only
+        and not args.force
+        and args.date in _config.parse_skip_dates(config)
+    ):
+        log.info(
+            f"Skipping {args.edition} edition for {args.date}: date is in config "
+            f"skip_dates (use --force to generate anyway)."
+        )
+        return
+
     # Non-trading-day PM editions are skipped: weekends + NYSE holidays
     # ship a single deeper AM "weekend edition" instead. Cron fires both
     # AM + PM every day; the PM fire on a non-trading day no-ops here

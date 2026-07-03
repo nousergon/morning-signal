@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`skip_dates:` config list — skip specific dates entirely.** Days the
+  listener can't listen (travel, vacation) as ISO `YYYY-MM-DD` strings: the
+  generate run no-ops cleanly for BOTH editions (exit 0, no failure email,
+  no Claude/TTS/S3 spend), and the freshness watchdog treats the absent
+  episode as expected instead of paging. Distinct from the NYSE trading
+  calendar, which only reshapes editions (weekends/holidays still ship a
+  weekend AM). `generate --force` overrides a skip date for a one-off manual
+  run; `--publish-only` (feed rebuild) is unaffected. Malformed entries fail
+  loud at config parse (`morning_signal.config.parse_skip_dates`) rather than
+  silently never matching a run date.
 - **`required_search_topics` entries can be scoped to editions (`editions`).**
   Different editions run different prompts with different segments — e.g. a
   weekday edition with a political-pulse segment and a `weekend` edition (the

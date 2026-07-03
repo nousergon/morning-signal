@@ -35,6 +35,39 @@ def load_config() -> dict:
     return yaml.safe_load(CONFIG_FILE.read_text())
 
 
+def parse_skip_dates(config: dict) -> frozenset[str]:
+    """The operator's per-date skip list (``skip_dates:`` in config.yaml).
+
+    Dates the podcast should NOT be produced at all — travel days, vacations —
+    as ISO ``YYYY-MM-DD`` strings. Distinct from the NYSE trading calendar
+    (which only reshapes editions: weekends/holidays still ship a weekend AM):
+    a skip date suppresses BOTH editions, and the freshness watchdog treats
+    the absent episode as expected rather than alerting.
+
+    Malformed entries fail loud here rather than silently never matching a
+    run date (a typo like ``2026-7-9`` would otherwise skip nothing, and the
+    operator would only find out when the episode they meant to suppress
+    shipped anyway).
+    """
+    from datetime import date as _date
+
+    raw = config.get("skip_dates") or []
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"skip_dates must be a list of YYYY-MM-DD strings, got {type(raw).__name__}"
+        )
+    validated = []
+    for entry in raw:
+        try:
+            _date.fromisoformat(str(entry))
+        except ValueError as exc:
+            raise ValueError(
+                f"skip_dates entry {entry!r} is not a valid ISO date (YYYY-MM-DD)"
+            ) from exc
+        validated.append(str(entry))
+    return frozenset(validated)
+
+
 def load_prompt(weekend: bool = False) -> str:
     """Load the appropriate prompt for this edition.
 
