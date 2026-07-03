@@ -1,21 +1,31 @@
-"""Script generation via Claude with web search."""
+"""Script generation via a web-search-grounded LLM call.
+
+Runs through the krepis provider-agnostic adapter (``krepis.llm.LLMClient``).
+Phase A of the fleet-wide provider migration (2026-07-03): generation stays on
+the ANTHROPIC transport — the product is grounded on Anthropic's server-side
+``web_search`` tool (forced-search recovery, per-query search telemetry, and
+the coverage guard all key on it). Phase B (open-weight model via OpenRouter +
+its ``openrouter:web_search`` server tool) re-keys the coverage guard to
+citations and is gated on a shadow-canary bakeoff; the ``llm`` config knob is
+already the flip surface.
+"""
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from datetime import datetime
 
-from krepis.anthropic_payload import (
-    build_messages_payload,
-    build_web_search_tool,
-)
+from krepis.llm import LLMClient, SearchOptions
+from krepis.llm_capture import capture_llm_call
+from krepis.llm_config import ModelSpec, parse_model_spec
 from krepis.trading_calendar import is_trading_day
 
 from morning_signal import config as _config
 from morning_signal.config import load_prompt
-from morning_signal.cost_telemetry import record_call_cost
+from morning_signal.cost_telemetry import record_result_cost
 from morning_signal.news_context import load_news_context
 from morning_signal.schedule_override import (
     derived_topic_guard,
@@ -24,12 +34,36 @@ from morning_signal.schedule_override import (
     record_applied,
 )
 from morning_signal.search_telemetry import (
-    extract_searches,
-    record_searches,
+    record_search_events,
     unmet_required_topics,
 )
 
 log = logging.getLogger("morning-signal")
+
+# Env override for the active ModelSpec (wins over config) — operator/test
+# escape hatch. The durable flip surface is the ``llm`` key in config.yaml —
+# which in production IS the /morning-signal/config-yaml SSM parameter, so a
+# provider flip is an SSM edit picked up by the next cron firing, no redeploy.
+LLM_ENV_VAR = "MORNING_SIGNAL_LLM"
+
+
+def resolve_llm_spec(config: dict) -> ModelSpec:
+    """The active ModelSpec: env override → config ``llm`` → legacy default.
+
+    The legacy default (anthropic + ``claude_model``) keeps every
+    pre-migration config behavior-identical.
+    """
+    env_value = os.environ.get(LLM_ENV_VAR)
+    if env_value:
+        return parse_model_spec(env_value, source=f"env {LLM_ENV_VAR}")
+    configured = config.get("llm")
+    if configured:
+        return parse_model_spec(str(configured), source="config 'llm'")
+    return ModelSpec(
+        "anthropic",
+        config.get("claude_model", "claude-sonnet-4-6"),
+        max_tokens=config.get("max_tokens", 4096),
+    )
 
 EDITION_LABELS = {"am": "MORNING", "pm": "EVENING"}
 
@@ -94,11 +128,11 @@ def opening_line(edition: str, weekend: bool) -> str:
     Instructed via the dynamic user message and enforced via response
     post-processing. Previously sent as an assistant-turn prefill, but
     that combination with the ``web_search`` server tool is rejected
-    by Anthropic — the producer-side guard now lives in
-    ``krepis.anthropic_payload.validate_payload``
-    (from the MIT krepis library). ``build_messages_payload`` runs the
-    validator at construction time so any future regression that
-    re-introduces the prefill+server-tool combo fails loud at PR time.
+    by Anthropic — the producer-side guard lives in
+    ``krepis.anthropic_payload.validate_payload``, which the krepis
+    ``LLMClient`` anthropic transport runs at payload-construction time,
+    so any future regression that re-introduces the prefill+server-tool
+    combo fails loud before reaching the API.
     """
     if weekend:
         return "Welcome to Morning Signal, weekend edition."
@@ -108,59 +142,67 @@ def opening_line(edition: str, weekend: bool) -> str:
 
 
 def _invoke_and_record(
-    client,
+    llm_client: LLMClient,
     config: dict,
     prompt_text: str,
     user_content: str,
-    tools: list,
     date_str: str,
     edition: str,
-    tool_choice: dict | None = None,
+    force_search: bool = False,
 ):
-    """Run one ``messages.create`` generation pass and record its telemetry.
+    """Run one grounded generation pass and record its telemetry.
 
-    Returns ``(response, n_searches)``. Factored out of :func:`generate_script`
-    so the self-healing recovery pass can re-invoke the model with an escalated
-    user message under the SAME payload contract. Cost + per-search telemetry
+    Returns ``(result, n_searches)`` where ``result`` is a krepis
+    ``GroundedResult``. Factored out of :func:`generate_script` so the
+    self-healing recovery pass can re-invoke the model with an escalated user
+    message under the SAME payload contract. Cost + per-search telemetry
     append to the episode's JSONL sinks on every call, so a recovery pass is
     captured as an additional billed call (accurate cost record), not hidden.
 
-    ``tool_choice`` (when provided) is injected into the payload to FORCE a
-    tool call — used by the recovery pass to deterministically force a
-    ``web_search`` (``{"type": "tool", "name": "web_search"}``) rather than
-    merely asking for one in prose. Verified against the live API
-    (2026-06-29): forcing the server-side ``web_search`` is accepted (HTTP
-    200, no 400) and the model still writes its full script after the forced
-    search. ``build_messages_payload`` does not expose ``tool_choice``, so we
-    set it on the returned payload dict directly.
+    ``force_search=True`` deterministically forces a ``web_search`` tool call
+    (``SearchOptions.force_first`` → forced server-tool ``tool_choice`` on
+    the anthropic transport) — used by the recovery pass rather than merely
+    asking for a search in prose. Verified against the live API (2026-06-29).
 
-    ``build_messages_payload`` runs ``validate_payload`` internally — the
-    server-tool ⊥ assistant-prefill invariant is enforced at lib level.
+    The krepis anthropic transport builds its payload through
+    ``krepis.anthropic_payload`` — the server-tool ⊥ assistant-prefill
+    invariant is still enforced at lib level. Every call is also staged to
+    the distillation corpus (``episodes/{date}-{edition}.sft.jsonl``) when
+    ``LLM_SFT_CAPTURE_ENABLED=1`` — a no-op otherwise, and a persist failure
+    with the flag on raises rather than silently dropping training data
+    (same disk the episode itself writes to).
     """
-    payload = build_messages_payload(
-        model=config.get("claude_model", "claude-sonnet-4-6"),
-        system_prompt=prompt_text,
+    result = llm_client.complete_grounded(
+        system=prompt_text,
         user_content=user_content,
+        search=SearchOptions(
+            max_uses=config.get("web_search_max_uses", 20),
+            force_first=force_search,
+        ),
         max_tokens=config.get("max_tokens", 4096),
-        tools=tools,
         cache_system=True,
     )
-    if tool_choice is not None:
-        payload["tool_choice"] = tool_choice
-    response = client.messages.create(**payload)
-    record_call_cost(
-        msg=response,
+    cost = record_result_cost(
+        result=result,
         date_str=date_str,
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
-    n_searches = record_searches(
-        msg=response,
+    n_searches = record_search_events(
+        searches=result.searches,
         date_str=date_str,
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
-    return response, n_searches
+    capture_llm_call(
+        result,
+        producer="morning_signal",
+        sink_path=_config.EPISODES_DIR / f"{date_str}-{edition}.sft.jsonl",
+        cost_usd=cost,
+        meta={"date": date_str, "edition": edition,
+              "recovery_pass": force_search},
+    )
+    return result, n_searches
 
 
 def _coverage_recovery_directive(
@@ -244,9 +286,7 @@ def generate_script(
     ``max_uses`` on ``web_search`` caps server-tool fees in the runaway
     case; 20 is above the empirical typical (~15).
     """
-    import anthropic
-
-    client = anthropic.Anthropic(max_retries=5)
+    llm_client = LLMClient(resolve_llm_spec(config), max_retries=5)
     weekend = is_non_trading_day(date_str)
     prompt_text = load_prompt(weekend=weekend)
 
@@ -256,10 +296,6 @@ def generate_script(
     opener = opening_line(edition, weekend)
 
     log.info(f"Generating {edition_label} script for {friendly_date}...")
-
-    tools = [
-        build_web_search_tool(max_uses=config.get("web_search_max_uses", 20))
-    ]
 
     # Optional pre-fetched news context (config-gated, default OFF). When
     # enabled it is a HARD requirement by default: load_news_context RAISES
@@ -323,8 +359,8 @@ def generate_script(
         f"{opener}"
     )
 
-    response, n_searches = _invoke_and_record(
-        client, config, prompt_text, user_content, tools, date_str, edition
+    result, n_searches = _invoke_and_record(
+        llm_client, config, prompt_text, user_content, date_str, edition
     )
 
     # Fail-loud guard: an edition that ran fewer than ``min_web_searches``
@@ -414,10 +450,12 @@ def generate_script(
         effective_edition = "weekend" if weekend else edition
         fatal = config.get("required_search_topics_fatal", False)
         recover = config.get("required_search_topics_recover", True)
-        script_text = _final_text_after_last_tool(response.content)
+        # GroundedResult.text is the post-final-tool text; .searches carries
+        # the per-query events — both extracted by krepis.llm_search (the
+        # lifted morning-signal logic), no response re-parsing needed.
         unmet = unmet_required_topics(
-            extract_searches(response), required_topics,
-            edition=effective_edition, script=script_text,
+            result.searches, required_topics,
+            edition=effective_edition, script=result.text,
         )
 
         if unmet and recover:
@@ -431,23 +469,18 @@ def generate_script(
             )
             # Deterministically FORCE a web_search on the recovery pass rather
             # than only asking for one in prose — the prose ask is the same
-            # stochastic compliance that already failed on the first pass. The
-            # web_search tool name comes from the tool definition so it stays
-            # in sync with build_web_search_tool. (Forcing the server-side
-            # web_search is API-supported — verified live 2026-06-29.)
-            force_search = {
-                "type": "tool",
-                "name": tools[0].get("name", "web_search") if tools else "web_search",
-            }
+            # stochastic compliance that already failed on the first pass.
+            # (SearchOptions.force_first → forced server-tool tool_choice;
+            # API-supported, verified live 2026-06-29. Anthropic-transport
+            # only — Phase B replaces this with a citation-count floor.)
             try:
                 r2, n2 = _invoke_and_record(
-                    client, config, prompt_text, user_content + directive,
-                    tools, date_str, edition, tool_choice=force_search,
+                    llm_client, config, prompt_text, user_content + directive,
+                    date_str, edition, force_search=True,
                 )
-                script2 = _final_text_after_last_tool(r2.content)
                 unmet2 = unmet_required_topics(
-                    extract_searches(r2), required_topics,
-                    edition=effective_edition, script=script2,
+                    r2.searches, required_topics,
+                    edition=effective_edition, script=r2.text,
                 )
                 if len(unmet2) < len(unmet):
                     log.info(
@@ -456,7 +489,7 @@ def generate_script(
                         f"{len(unmet2)} uncovered "
                         f"(now: {', '.join(unmet2) or 'all covered'})."
                     )
-                    response, n_searches, unmet = r2, n2, unmet2
+                    result, n_searches, unmet = r2, n2, unmet2
                 else:
                     log.warning(
                         f"Recovery did not improve coverage for "
@@ -498,10 +531,10 @@ def generate_script(
                 unmet, n_searches, budget,
             )
 
-    script = _final_text_after_last_tool(response.content)
+    script = result.text
 
     if not script:
-        log.error("Claude returned no text content.")
+        log.error("Model returned no text content.")
         sys.exit(1)
 
     script = _scrub_preamble(script, opener)
@@ -525,37 +558,13 @@ def generate_script(
     return script
 
 
-def _final_text_after_last_tool(content) -> str:
-    """Return only the text the model wrote AFTER its last tool use.
-
-    With server-side ``web_search`` the response interleaves blocks:
-    ``text`` / ``server_tool_use`` / ``web_search_tool_result`` / ``text`` …
-    The model narrates its plan in the text blocks emitted BEFORE and BETWEEN
-    searches ("I need to search for…", "Based on the search results, I now
-    have… Here's the segment:") and writes the actual spoken copy in the text
-    run AFTER its final search. Joining every text block dragged that narration
-    into the episode audio (2026-05-30). Keeping only the post-final-tool text
-    removes it at the source — positionally, with no pattern matching — so the
-    regex scrub becomes a backstop rather than the primary defense.
-
-    If the model never used a tool (no search), keep all text. If there is no
-    text after the final tool block (the model put everything before it), fall
-    back to all text blocks so we never silently drop the whole segment — the
-    scrub then cleans any preamble, and the fail-loud empty check still fires.
-    """
-    last_tool_idx = -1
-    for i, block in enumerate(content):
-        if block.type != "text":
-            last_tool_idx = i
-    tail = "\n\n".join(
-        b.text for b in content[last_tool_idx + 1:] if b.type == "text"
-    ).strip()
-    if tail:
-        return tail
-    return "\n\n".join(b.text for b in content if b.type == "text").strip()
+# (The post-final-tool text extraction that used to live here —
+# `_final_text_after_last_tool`, the 2026-05-30 narration fix — was lifted
+# verbatim into `krepis.llm_search.final_text_after_last_tool`; the adapter
+# applies it when building `GroundedResult.text`.)
 
 
-# HIGH-PRECISION meta-narration patterns. Since `_final_text_after_last_tool`
+# HIGH-PRECISION meta-narration patterns. Since the post-final-tool extraction
 # now removes pre/inter-search narration positionally (the primary defense),
 # this regex pass is a BACKSTOP — so it must err toward NOT matching. Each
 # pattern pairs a first-person / process cue with an explicit search/segment

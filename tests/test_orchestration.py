@@ -452,7 +452,7 @@ def test_generate_script_aborts_when_zero_searches(fresh_ge_module, tmp_path):
     anth_mock, _ = _make_anthropic_mock("Ungrounded hallucinated body.")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path), \
-         patch.object(_claude, "record_searches", return_value=0):
+         patch.object(_claude, "record_search_events", return_value=0):
         with pytest.raises(RuntimeError, match="web_search floor not met"):
             fresh_ge_module.generate_script(
                 {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
@@ -467,7 +467,7 @@ def test_generate_script_passes_when_search_floor_met(fresh_ge_module, tmp_path)
     anth_mock, _ = _make_anthropic_mock("Grounded body.")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path), \
-         patch.object(_claude, "record_searches", return_value=3):
+         patch.object(_claude, "record_search_events", return_value=3):
         out = fresh_ge_module.generate_script(
             {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
         )
@@ -484,7 +484,7 @@ def test_generate_script_zero_search_allowed_when_floor_disabled(fresh_ge_module
     anth_mock, _ = _make_anthropic_mock("Static body.")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path), \
-         patch.object(_claude, "record_searches", return_value=0):
+         patch.object(_claude, "record_search_events", return_value=0):
         out = fresh_ge_module.generate_script(
             {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0},
             "2026-05-14", "am",
@@ -502,7 +502,7 @@ def test_generate_script_publishes_with_alert_when_required_topic_unmet(
     topic is a quality defect, NOT grounds to withhold the episode. The
     DEFAULT behaviour is publish-anyway + fire a flow-doctor/Telegram alert
     naming the uncovered topics — never raise. The global search floor was
-    met (record_searches >= floor), so only a specific segment is stale.
+    met (record_search_events >= floor), so only a specific segment is stale.
     """
     prompt_path = tmp_path / "p.md"
     prompt_path.write_text("prompt")
@@ -512,8 +512,7 @@ def test_generate_script_publishes_with_alert_when_required_topic_unmet(
     anth_mock, _ = _make_anthropic_mock("Mostly grounded body.")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path), \
-         patch.object(_claude, "record_searches", return_value=8), \
-         patch.object(_claude, "extract_searches", return_value=[{"query": "spy"}]), \
+         patch.object(_claude, "record_search_events", return_value=8), \
          patch.object(
              _claude, "unmet_required_topics",
              return_value=["MAGA Pulse", "Anti-MAGA / Heterodox-Right Pulse"],
@@ -561,8 +560,7 @@ def test_generate_script_required_topics_fatal_flag_restores_abort(
     anth_mock, _ = _make_anthropic_mock("body")
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path), \
-         patch.object(_claude, "record_searches", return_value=8), \
-         patch.object(_claude, "extract_searches", return_value=[{"query": "spy"}]), \
+         patch.object(_claude, "record_search_events", return_value=8), \
          patch.object(_claude, "unmet_required_topics", return_value=["MAGA Pulse"]), \
          patch(
              "morning_signal.watchdog.send_alert",

@@ -54,64 +54,29 @@ def extract_searches(msg: "Message") -> list[dict[str, Any]]:
     block (or a result block whose content is an error rather than a
     list) yields ``urls=[]`` and ``error`` populated.
     """
-    tool_uses: dict[str, dict[str, Any]] = {}
-    results_by_id: dict[str, list[Any]] = {}
-    errors_by_id: dict[str, str] = {}
-    order: list[str] = []
+    # Extraction logic was lifted verbatim into the shared krepis library
+    # (2026-07 provider migration) so every consumer parses the Anthropic
+    # search blocks identically; this module keeps the JSONL sink + the
+    # coverage-guard logic, which are morning-signal editorial concerns.
+    from krepis.llm_search import extract_anthropic_search_events
 
-    for block in msg.content:
-        btype = getattr(block, "type", None)
-        if btype == "server_tool_use" and getattr(block, "name", None) == "web_search":
-            block_id = getattr(block, "id", None)
-            if block_id is None:
-                continue
-            inp = getattr(block, "input", None) or {}
-            query = inp.get("query", "") if isinstance(inp, dict) else ""
-            tool_uses[block_id] = {"query": query}
-            order.append(block_id)
-        elif btype == "web_search_tool_result":
-            tool_use_id = getattr(block, "tool_use_id", None)
-            if tool_use_id is None:
-                continue
-            content = getattr(block, "content", None)
-            if isinstance(content, list):
-                results_by_id[tool_use_id] = content
-            else:
-                err_code = getattr(content, "error_code", None)
-                errors_by_id[tool_use_id] = err_code or str(content)
-
-    out: list[dict[str, Any]] = []
-    for block_id in order:
-        info = tool_uses[block_id]
-        results = results_by_id.get(block_id, [])
-        urls: list[str] = []
-        for r in results:
-            url = getattr(r, "url", None)
-            if isinstance(url, str):
-                urls.append(url)
-        out.append({
-            "query": info["query"],
-            "urls": urls,
-            "result_count": len(urls),
-            "error": errors_by_id.get(block_id),
-        })
-    return out
+    return [dict(e) for e in extract_anthropic_search_events(msg)]
 
 
-def record_searches(
+def record_search_events(
     *,
-    msg: "Message",
+    searches: list[dict[str, Any]],
     date_str: str,
     edition: str,
     episodes_dir: Path,
 ) -> int:
-    """Extract per-search queries + URLs from ``msg`` and append one
-    JSONL line per search to ``episodes/{date_str}-{edition}.searches.jsonl``.
+    """Append one JSONL line per already-extracted search event to
+    ``episodes/{date_str}-{edition}.searches.jsonl``.
 
-    Returns the number of searches recorded (0 if the call did no
-    ``web_search`` at all).
+    Sink half of :func:`record_searches` — the krepis ``LLMClient`` adapter
+    returns extracted events (``GroundedResult.searches``) directly, so the
+    generation path calls this without re-parsing the response.
     """
-    searches = extract_searches(msg)
     if not searches:
         return 0
 
@@ -127,6 +92,29 @@ def record_searches(
         f"Searches: recorded {len(searches)} queries to {out_path.name}"
     )
     return len(searches)
+
+
+def record_searches(
+    *,
+    msg: "Message",
+    date_str: str,
+    edition: str,
+    episodes_dir: Path,
+) -> int:
+    """Extract per-search queries + URLs from ``msg`` and append one
+    JSONL line per search to ``episodes/{date_str}-{edition}.searches.jsonl``.
+
+    Returns the number of searches recorded (0 if the call did no
+    ``web_search`` at all). Message-based convenience over
+    :func:`extract_searches` + :func:`record_search_events` — kept for
+    callers that hold a raw Anthropic ``Message`` (canary/live-smoke paths).
+    """
+    return record_search_events(
+        searches=extract_searches(msg),
+        date_str=date_str,
+        edition=edition,
+        episodes_dir=episodes_dir,
+    )
 
 
 def unmet_required_topics(
