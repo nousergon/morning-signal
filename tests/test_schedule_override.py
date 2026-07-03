@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import sys
-from unittest.mock import patch
 
 import boto3
 import pytest
