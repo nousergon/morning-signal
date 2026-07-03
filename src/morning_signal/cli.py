@@ -296,6 +296,34 @@ def watchdog(
     date = date or _default_date()
     edition = edition or _default_edition()
 
+    # A configured skip date means the episode is EXPECTED to be absent —
+    # exit 0 with an explicit line, or the watchdog would page on every
+    # planned skip (same list the generate guard reads).
+    from morning_signal.config import parse_skip_dates
+
+    if date in parse_skip_dates(config):
+        log.info(
+            f"Watchdog OK: {date} is in config skip_dates — episode absence is expected."
+        )
+        return
+
+    # A console-scheduled skip (schedule manifest, mode=skip) is the same
+    # expected absence. ``alert_on_failure=False``: the watchdog IS the
+    # alerting layer — an unreadable manifest must fail toward CHECKING
+    # freshness (and paging on a genuinely missing episode), never toward
+    # silently suppressing the page.
+    from morning_signal.schedule_override import load_schedule_override
+
+    sched_entry = load_schedule_override(
+        config, date, edition, alert_on_failure=False
+    )
+    if sched_entry and sched_entry["mode"] == "skip":
+        log.info(
+            f"Watchdog OK: {date} is a scheduled skip in the schedule "
+            f"manifest — episode absence is expected."
+        )
+        return
+
     try:
         last_modified = check_episode_fresh(
             config, date, edition, max_age_hours=max_age_hours

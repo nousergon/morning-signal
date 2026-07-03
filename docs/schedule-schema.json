@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nousergon/morning-signal/docs/schedule-schema.json",
+  "title": "Morning Signal schedule manifest (v1)",
+  "description": "Per-date content-override schedule read from S3 at generation time (schedule_override.load_schedule_override). DOCUMENTATION COPY: the enforced validator is the dependency-free schedule_override.validate_schedule_manifest, duplicated identically in the console producer (alpha-engine-dashboard loaders/morning_signal_schedule.py); the per-repo contract tests run both copies over the shared fixtures in tests/fixtures/schedule/. Unknown fields are ignored by consumers (additive-forward).",
+  "type": "object",
+  "required": ["schema_version", "entries"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "updated_at_utc": { "type": "string" },
+    "entries": {
+      "type": "object",
+      "propertyNames": { "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["mode"],
+        "properties": {
+          "mode": { "enum": ["override", "extend", "skip"] },
+          "topic": {
+            "type": "string",
+            "description": "Required + non-empty for override/extend; optional for skip."
+          },
+          "guidance": {
+            "type": "string",
+            "description": "Freeform operator prompt text (for skip: the reason). Optional."
+          },
+          "editions": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "enum": ["am", "pm"] },
+            "description": "Matched against the LITERAL run edition arg. Default [\"am\"] for override/extend, [\"am\",\"pm\"] for skip. Weekend runs are invoked with edition=\"am\"."
+          },
+          "keywords": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Search-coverage guard keywords; derived from topic tokens when absent."
+          },
+          "min_searches": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Coverage guard min_matches. Default 3 for override, 1 for extend; unused for skip."
+          },
+          "created_at_utc": { "type": "string" },
+          "updated_at_utc": { "type": "string" }
+        }
+      }
+    }
+  }
+}
