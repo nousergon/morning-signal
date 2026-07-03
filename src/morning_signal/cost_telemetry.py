@@ -39,7 +39,7 @@ log = logging.getLogger("morning-signal")
 
 def record_result_cost(
     *,
-    result: "LLMResult",
+    result: LLMResult,
     date_str: str,
     edition: str,
     episodes_dir: Path,
@@ -72,7 +72,7 @@ def record_result_cost(
 
 def record_call_cost(
     *,
-    msg: "Message",
+    msg: Message,
     date_str: str,
     edition: str,
     episodes_dir: Path,
