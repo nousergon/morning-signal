@@ -230,6 +230,13 @@ unless you want PR-reviewed prompt changes.
 - `feed_max_episodes` — max episodes kept in the RSS feed
 - Generation-mode knobs — see below
 - Telegram notification creds (optional)
+- `skip_dates` — dates to skip entirely (travel/vacation): clean no-op for
+  both editions, and the watchdog treats the absent episode as expected
+- `schedule` — optional add-on (default OFF): a per-date schedule manifest
+  read from S3 that can devote an episode to a scheduled deep-dive topic
+  (`override`), add an extra segment (`extend`), or skip the day (`skip`).
+  Disabled = zero behavior change; any schedule read failure fails soft to
+  the regular episode. Manifest schema: `docs/schedule-schema.json`
 
 ### Customizing the script
 

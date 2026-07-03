@@ -307,6 +307,23 @@ def watchdog(
         )
         return
 
+    # A console-scheduled skip (schedule manifest, mode=skip) is the same
+    # expected absence. ``alert_on_failure=False``: the watchdog IS the
+    # alerting layer — an unreadable manifest must fail toward CHECKING
+    # freshness (and paging on a genuinely missing episode), never toward
+    # silently suppressing the page.
+    from morning_signal.schedule_override import load_schedule_override
+
+    sched_entry = load_schedule_override(
+        config, date, edition, alert_on_failure=False
+    )
+    if sched_entry and sched_entry["mode"] == "skip":
+        log.info(
+            f"Watchdog OK: {date} is a scheduled skip in the schedule "
+            f"manifest — episode absence is expected."
+        )
+        return
+
     try:
         last_modified = check_episode_fresh(
             config, date, edition, max_age_hours=max_age_hours

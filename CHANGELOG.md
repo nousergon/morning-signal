@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`schedule:` config block — per-date scheduled content overrides
+  (OPTIONAL ADD-ON, default OFF).** When enabled, a schedule manifest JSON
+  (`schedule/schedule.json` in the podcast bucket by default; schema in
+  `docs/schedule-schema.json`, `schema_version` 1) is read from S3 at
+  generation time. An entry for the run date can: `override` — devote the
+  whole episode to a scheduled deep-dive topic instead of regular
+  programming; `extend` — add one extra segment on top of the regular
+  lineup; or `skip` — produce no episode at all that day (the
+  console-editable counterpart of `skip_dates:` below; both sources are
+  honored by the generate guard AND the watchdog, and `generate --force`
+  overrides either). Deep dives are guaranteed live-researched, not
+  written from memory: the entry's topic becomes a per-run
+  `required_search_topics` guard riding the existing coverage +
+  forced-`web_search` recovery machinery (in `override` mode it REPLACES
+  the config-declared topics — segments that intentionally don't air must
+  not trigger recovery or a fatal abort). Basic form unaffected: with the
+  block absent/disabled there is ZERO behavior change (no S3 read, no new
+  deps, no new CLI surface); even when enabled a missing manifest is a
+  silent no-op, and any schedule READ failure fails soft to the regular
+  episode with a WARN log + Telegram alert (`watchdog.send_alert`). After
+  a schedule entry is applied, a best-effort marker is written to
+  `schedule/applied/{date}-{edition}.json` so the (separate) console
+  schedule page can show the entry actually aired. New module:
+  `morning_signal.schedule_override`.
 - **`skip_dates:` config list — skip specific dates entirely.** Days the
   listener can't listen (travel, vacation) as ISO `YYYY-MM-DD` strings: the
   generate run no-ops cleanly for BOTH editions (exit 0, no failure email,

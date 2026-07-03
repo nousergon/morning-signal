@@ -51,6 +51,26 @@ tts:
 #   - "2026-07-10"
 skip_dates: []
 
+# Scheduled per-date content overrides (OPTIONAL ADD-ON, default OFF).
+# When enabled, a small schedule manifest JSON is read from S3 at generation
+# time; an entry for today's date can (a) "override" — devote the whole
+# episode to a scheduled deep-dive topic instead of regular programming,
+# (b) "extend" — add one extra segment on top of the regular lineup, or
+# (c) "skip" — produce no episode at all that day (the console-editable
+# counterpart of the skip_dates list above; both sources are honored, and
+# `generate --force` overrides either). Basic form is unaffected: with the
+# block absent or enabled=false there is ZERO behavior change — no S3 read,
+# no new dependencies, no required objects. Even when enabled, a missing
+# manifest is a silent no-op; any schedule READ failure fails soft (the
+# regular episode ships) with a WARN log + Telegram alert. Manifest schema:
+# docs/schedule-schema.json (schema_version 1).
+# schedule:
+#   enabled: true
+#   s3_bucket: ""                      # default: s3_bucket above
+#   s3_key: "schedule/schedule.json"
+schedule:
+  enabled: false
+
 # ── Generation ──────────────────────────────────────────────────────────────
 claude_model: "claude-sonnet-4-6"  # Use the latest Sonnet for current Claude API
 max_tokens: 8192

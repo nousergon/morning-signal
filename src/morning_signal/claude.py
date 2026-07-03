@@ -17,6 +17,12 @@ from morning_signal import config as _config
 from morning_signal.config import load_prompt
 from morning_signal.cost_telemetry import record_call_cost
 from morning_signal.news_context import load_news_context
+from morning_signal.schedule_override import (
+    derived_topic_guard,
+    format_schedule_directive,
+    load_schedule_override,
+    record_applied,
+)
 from morning_signal.search_telemetry import (
     extract_searches,
     record_searches,
@@ -26,6 +32,13 @@ from morning_signal.search_telemetry import (
 log = logging.getLogger("morning-signal")
 
 EDITION_LABELS = {"am": "MORNING", "pm": "EVENING"}
+
+# Sentinel distinguishing "caller didn't pass a schedule entry — load it
+# yourself" from an explicit None ("no schedule entry applies", e.g. a
+# --force run over a skip date). Keeps generate_script's original
+# 3-positional-arg call contract intact for direct callers/tests while
+# letting episode.main share its single manifest read.
+_LOAD_SCHEDULE = object()
 
 
 def _alert_degraded_coverage(
@@ -198,8 +211,23 @@ def _coverage_recovery_directive(
     )
 
 
-def generate_script(config: dict, date_str: str, edition: str) -> str:
+def generate_script(
+    config: dict,
+    date_str: str,
+    edition: str,
+    schedule_entry: dict | None | object = _LOAD_SCHEDULE,
+) -> str:
     """Call Claude with web search to generate the podcast script.
+
+    ``schedule_entry``: the normalized per-date schedule entry from
+    ``schedule_override.load_schedule_override``. ``episode.main`` loads
+    the manifest once (for its skip guard) and passes the result through
+    here; direct callers can omit it (the default sentinel loads it from
+    config/S3, preserving the original call contract) or pass ``None``
+    to explicitly run regular programming. ``skip`` entries never reach
+    this function via the orchestrator; a self-loaded skip entry is
+    treated as regular programming (the skip decision belongs to
+    ``episode.main``, not here).
 
     Payload shape:
       - ``system``: static production prompt with ephemeral
@@ -244,14 +272,52 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     news_block = load_news_context(config, run_date=date_str)
     news_segment = f"{news_block}\n\n" if news_block else ""
 
+    # Optional per-date scheduled content override (config-gated, default
+    # OFF — see schedule_override.py). Fail-soft by design: any schedule
+    # failure degrades to the regular episode (the loader WARNs + fires a
+    # Telegram alert; the pod itself always ships). ``override`` devotes
+    # the whole episode to the scheduled deep-dive topic; ``extend`` adds
+    # one extra segment on top of the regular lineup. ``skip`` is handled
+    # upstream in episode.main (a self-loaded skip degrades to regular
+    # programming here — this function only generates).
+    if schedule_entry is _LOAD_SCHEDULE:
+        schedule_entry = load_schedule_override(config, date_str, edition)
+    if schedule_entry and schedule_entry["mode"] == "skip":
+        log.info(
+            f"schedule: skip entry for {date_str} reached generate_script "
+            f"(direct call?) — the skip decision belongs to episode.main; "
+            f"generating regular programming"
+        )
+        schedule_entry = None
+
+    schedule_segment = ""
+    if schedule_entry:
+        log.info(
+            f"schedule: applying {schedule_entry['mode']} for {date_str}: "
+            f"{schedule_entry['topic']}"
+        )
+        schedule_segment = (
+            f"{format_schedule_directive(schedule_entry, edition_label)}\n\n"
+        )
+
+    if schedule_entry and schedule_entry["mode"] == "override":
+        generate_instruction = (
+            "Generate today's special deep-dive episode per the scheduled "
+            "override above, keeping the system prompt's voice and format."
+        )
+    else:
+        generate_instruction = (
+            f"Generate today's {edition_label.lower()} episode per the "
+            f"system prompt, respecting the News Window for this edition "
+            f"(only news/events since the prior edition)."
+        )
+
     user_content = (
         f"Today is {friendly_date}. This is the {edition_label} edition "
         f"of Morning Signal.\n\n"
         f"{news_segment}"
-        f"Generate today's "
-        f"{edition_label.lower()} episode per the system prompt, respecting "
-        f"the News Window for this edition (only news/events since the "
-        f"prior edition).\n\n"
+        f"{schedule_segment}"
+        f"{generate_instruction}\n\n"
         f"Your response MUST begin verbatim with this exact line, "
         f"with no preamble or acknowledgement before it:\n\n"
         f"{opener}"
@@ -329,6 +395,21 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
     # near-zero-search edition is hallucinated wholesale, a different and
     # unrecoverable failure.
     required_topics = config.get("required_search_topics") or []
+    if schedule_entry:
+        guard = derived_topic_guard(schedule_entry)
+        if schedule_entry["mode"] == "override":
+            # An override episode intentionally drops the regular segment
+            # lineup — the config-declared per-segment guards would force a
+            # wasted recovery pass (or hard-abort under
+            # required_search_topics_fatal) over segments that were never
+            # meant to air. Only the deep dive's own guard applies. NOTE the
+            # guard carries no ``editions`` key (see derived_topic_guard):
+            # coverage filters by effective_edition ("weekend" on
+            # non-trading days), which would silently drop an "am"-scoped
+            # guard on every weekend deep dive.
+            required_topics = [guard] if guard else []
+        elif guard:
+            required_topics = list(required_topics) + [guard]
     if required_topics:
         effective_edition = "weekend" if weekend else edition
         fatal = config.get("required_search_topics_fatal", False)
@@ -434,6 +515,13 @@ def generate_script(config: dict, date_str: str, edition: str) -> str:
 
     word_count = len(script.split())
     log.info(f"Script: {len(script)} chars, ~{word_count} words (~{word_count / 150:.0f} min spoken)")
+
+    # A schedule entry made it into the generated script — record the
+    # best-effort applied marker (the console's ✅ badge; never raises,
+    # never blocks TTS/publish).
+    if schedule_entry:
+        record_applied(config, date_str, edition, schedule_entry)
+
     return script
 
 

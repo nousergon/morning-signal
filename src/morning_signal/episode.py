@@ -12,6 +12,7 @@ from morning_signal import aws as _aws
 from morning_signal import config as _config
 from morning_signal.claude import generate_script
 from morning_signal.notify import make_doctor, notify_success
+from morning_signal.schedule_override import load_schedule_override, record_applied
 from morning_signal.publish import publish_to_s3
 from morning_signal.tts import synthesize
 
@@ -230,6 +231,36 @@ def main():
         )
         return
 
+    # Console-scheduled entry for this date/edition (S3 schedule manifest,
+    # config-gated default OFF — see schedule_override.py). Loaded ONCE
+    # here and passed through to generate_script so the manifest is read a
+    # single time per run. A ``skip`` entry is the console-schedulable
+    # counterpart of the config skip_dates list above: same clean no-op,
+    # same --force / --publish-only overrides, same watchdog suppression.
+    # ``alert_on_failure=False``: an unreadable manifest fails soft toward
+    # PRODUCING the regular episode (a pod you didn't want beats a missing
+    # pod), and generate_script's own load path is the one that alerts.
+    schedule_entry = None
+    if not args.publish_only:
+        schedule_entry = load_schedule_override(
+            config, args.date, args.edition, alert_on_failure=False
+        )
+    if schedule_entry and schedule_entry["mode"] == "skip":
+        if args.force:
+            log.info(
+                f"--force overrides the scheduled skip for {args.date}; "
+                f"generating regular programming."
+            )
+            schedule_entry = None
+        else:
+            log.info(
+                f"Skipping {args.edition} edition for {args.date}: scheduled "
+                f"skip in the schedule manifest (use --force to generate "
+                f"anyway)."
+            )
+            record_applied(config, args.date, args.edition, schedule_entry)
+            return
+
     # Non-trading-day PM editions are skipped: weekends + NYSE holidays
     # ship a single deeper AM "weekend edition" instead. Cron fires both
     # AM + PM every day; the PM fire on a non-trading day no-ops here
@@ -263,7 +294,10 @@ def main():
             phase = progress.add_task("[bold blue]Initializing", total=None)
             if not args.publish_only:
                 progress.update(phase, description="[bold blue]Generating script (Claude + web search)")
-                script = generate_script(config, args.date, args.edition)
+                script = generate_script(
+                    config, args.date, args.edition,
+                    schedule_entry=schedule_entry,
+                )
                 script_path = save_script(script, args.date, args.edition)
 
                 if not args.script_only:
