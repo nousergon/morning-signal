@@ -12,6 +12,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_llm_env(monkeypatch):
+    """Pin the LLM environment for every test: a dummy provider key (the
+    krepis ``LLMClient`` resolves it from the environment before reaching any
+    patched ``anthropic.Anthropic`` seam — without this, suites pass or fail
+    depending on the developer's ambient key) and no spec override (so the
+    config-driven resolution under test is what actually runs)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.delenv("MORNING_SIGNAL_LLM", raising=False)
+
+
 @pytest.fixture
 def tmp_episodes_dir(tmp_path: Path) -> Path:
     d = tmp_path / "episodes"

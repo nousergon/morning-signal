@@ -364,11 +364,16 @@ def gs_patched(monkeypatch):
     monkeypatch.setattr(
         _claude, "is_non_trading_day", lambda date_str: state["weekend"]
     )
-    monkeypatch.setattr(_claude, "record_call_cost", lambda **kw: None)
+    monkeypatch.setattr(_claude, "record_result_cost", lambda **kw: 0.0)
     monkeypatch.setattr(
-        _claude, "record_searches",
-        lambda **kw: len(_claude.extract_searches(kw["msg"])),
+        _claude, "record_search_events",
+        lambda **kw: len(kw["searches"]),
     )
+    monkeypatch.setattr(_claude, "capture_llm_call", lambda *a, **kw: False)
+    # krepis LLMClient resolves the provider API key from the environment
+    # before consulting the patched anthropic.Anthropic seam.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.delenv(_claude.LLM_ENV_VAR, raising=False)
     monkeypatch.setattr(
         _claude, "_alert_degraded_coverage",
         lambda config, edition, edition_label, date_str, unmet, n, budget:

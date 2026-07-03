@@ -72,7 +72,15 @@ schedule:
   enabled: false
 
 # ── Generation ──────────────────────────────────────────────────────────────
-claude_model: "claude-sonnet-4-6"  # Use the latest Sonnet for current Claude API
+# Active model spec via the krepis provider-agnostic adapter. Format:
+# "provider:model" (or a krepis ModelSpec JSON object as a string).
+# When omitted, falls back to the legacy anthropic + claude_model pair below —
+# behavior-identical for pre-migration configs. Generation is grounded on the
+# provider's server-side web search: supported on anthropic and openrouter
+# (Phase B; the coverage guard's forced-search recovery is anthropic-only
+# until the citation-keyed guard ships). Env override: MORNING_SIGNAL_LLM.
+# llm: "anthropic:claude-sonnet-4-6"
+claude_model: "claude-sonnet-4-6"  # legacy knob — feeds the default spec
 max_tokens: 8192
 
 # Hard cap on Anthropic ``web_search`` server-tool requests per episode.

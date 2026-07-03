@@ -93,9 +93,15 @@ def patched(monkeypatch):
     monkeypatch.setattr(claude, "load_prompt", lambda weekend=False: "SYSTEM PROMPT")
     monkeypatch.setattr(claude, "load_news_context", lambda config, run_date=None: "")
     monkeypatch.setattr(claude, "is_non_trading_day", lambda date_str: False)
-    monkeypatch.setattr(claude, "record_call_cost", lambda **kw: None)
-    monkeypatch.setattr(claude, "record_searches",
-                        lambda **kw: len(claude.extract_searches(kw["msg"])))
+    monkeypatch.setattr(claude, "record_result_cost", lambda **kw: 0.0)
+    monkeypatch.setattr(claude, "record_search_events",
+                        lambda **kw: len(kw["searches"]))
+    monkeypatch.setattr(claude, "capture_llm_call", lambda *a, **kw: False)
+    # krepis LLMClient resolves the provider API key from the environment
+    # before consulting any client seam — pin a dummy so the anthropic
+    # transport reaches the patched anthropic.Anthropic below.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.delenv(claude.LLM_ENV_VAR, raising=False)
 
     def _fake_alert(config, edition, edition_label, date_str, unmet, n, budget):
         state["alerts"].append(list(unmet))
