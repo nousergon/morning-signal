@@ -263,6 +263,15 @@ def watchdog(
     max_age_hours: float = typer.Option(
         6.0, "--max-age-hours", help="Alert if the episode's S3 object is older than this."
     ),
+    generate_window_hours: float = typer.Option(
+        2.0, "--generate-window-hours",
+        help=(
+            "Only run the freshness check within this many hours of the edition's "
+            "expected generate slot. Invocations outside the window (e.g. a systemd "
+            "timer re-armed by an unrelated infra reinstall hours later) skip cleanly "
+            "instead of false-alarming on staleness."
+        ),
+    ),
     notify: bool = typer.Option(
         False, "--notify",
         help="Send a Telegram alert via the configured notifier when the check fails.",
@@ -276,12 +285,19 @@ def watchdog(
     timer never firing, or an OOM kill. A bootstrap failure here surfaces as a
     non-zero exit (the deployment wrapper turns that into an alert from an
     identity independent of the runner role).
+
+    Invocations outside the ``--generate-window-hours`` tolerance of the
+    edition's expected generate slot exit 0 with a skip line instead of
+    running the freshness check — a systemd ``Persistent=true`` timer can
+    re-fire the oneshot service hours off-schedule (e.g. re-armed by an
+    unrelated infra reinstall), and ``max_age_hours`` staleness isn't a
+    meaningful signal at that point either way.
     """
     _setup_logging()
 
     from morning_signal import aws as _aws
     from morning_signal.config import load_config
-    from morning_signal.episode import _default_date, _default_edition
+    from morning_signal.episode import _default_date, _default_edition, hours_since_generate_slot
     from morning_signal.watchdog import (
         EpisodeMissing,
         EpisodeStale,
@@ -295,6 +311,20 @@ def watchdog(
 
     date = date or _default_date()
     edition = edition or _default_edition()
+
+    # Guard against invocations far outside the "shortly after generate"
+    # window this check is designed for — e.g. deploy-on-merge reinstalling
+    # the watchdog timer (systemd re-arms + immediately fires the oneshot)
+    # hours after the real generate slot. Outside the window, staleness is
+    # not a meaningful signal either way, so skip rather than false-alarm.
+    elapsed = hours_since_generate_slot(edition)
+    if elapsed < 0 or elapsed > generate_window_hours:
+        log.info(
+            f"Watchdog SKIP: invoked outside expected check window "
+            f"({elapsed:+.1f}h from the {edition} generate slot; window is "
+            f"0-{generate_window_hours:.1f}h after)."
+        )
+        return
 
     # A configured skip date means the episode is EXPECTED to be absent —
     # exit 0 with an explicit line, or the watchdog would page on every
