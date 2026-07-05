@@ -24,6 +24,15 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # Cross-repo dep: when krepis hasn't hit PyPI yet, install from git so
+      # PR CI stays green while krepis#15 is in flight. PyPI path wins once
+      # 0.10.3+ is published (merge krepis first).
+      - name: Pre-install krepis (PyPI or git fallback)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "krepis[anthropic]>=0.10.3" || \
+            pip install "krepis[anthropic] @ git+https://github.com/nousergon/krepis.git@feat/call-with-retry"
+
       - name: Install package + dev deps
         run: |
           python -m pip install --upgrade pip
