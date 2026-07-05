@@ -629,6 +629,9 @@ def _watchdog_env(monkeypatch):
     monkeypatch.setattr(_config, "load_config", lambda: config)
     monkeypatch.setattr(_episode, "_default_date", lambda: "2026-07-09")
     monkeypatch.setattr(_episode, "_default_edition", lambda: "am")
+    # Pin to "just after generate slot" so these tests exercise
+    # schedule-override logic, not the (separately tested) generate-window guard.
+    monkeypatch.setattr(_episode, "hours_since_generate_slot", lambda edition: 1.25)
 
 
 def test_watchdog_exits_zero_on_scheduled_skip(_watchdog_env, monkeypatch):

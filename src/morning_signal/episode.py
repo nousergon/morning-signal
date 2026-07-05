@@ -83,6 +83,27 @@ def _default_date() -> str:
     return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
 
 
+# Nominal Pacific-clock generate slot per edition (README: AM 05:00 PT is the
+# production timer; PM 17:00 PT is the documented-but-currently-unused second
+# edition). Mirrors the boundary `_default_edition` uses (noon PT).
+GENERATE_SLOT_HOUR = {"am": 5, "pm": 17}
+
+
+def hours_since_generate_slot(edition: str) -> float:
+    """Pacific-clock hours elapsed since today's expected generate slot for `edition`.
+
+    Negative when the slot hasn't happened yet today. Lets a caller (the
+    watchdog) recognize invocations far outside the intended "shortly after
+    generate" check window — e.g. a systemd timer re-armed by an unrelated
+    infra reinstall hours later — instead of treating an old but genuinely
+    fresh-so-far episode as evidence of staleness.
+    """
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    slot = now.replace(hour=GENERATE_SLOT_HOUR[edition], minute=0, second=0, microsecond=0)
+    return (now - slot).total_seconds() / 3600.0
+
+
 # Convenience re-exports so tests + downstream code can use
 # `from morning_signal import episode as ge; ge._chunk_text(...)` etc.
 # This mirrors the pre-refactor single-module surface. Listed in
@@ -97,6 +118,7 @@ from morning_signal.tts import _adjust_speed, _chunk_text, _concat_mp3s, synthes
 
 __all__ = [
     "EDITION_LABELS",
+    "GENERATE_SLOT_HOUR",
     "_adjust_speed",
     "_aws_client",
     "_chunk_text",
@@ -109,6 +131,7 @@ __all__ = [
     "_make_progress",
     "_maybe_load_from_ssm",
     "generate_script",
+    "hours_since_generate_slot",
     "is_non_trading_day",
     "load_config",
     "load_prompt",

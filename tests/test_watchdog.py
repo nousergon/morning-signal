@@ -98,6 +98,10 @@ def _stub_bootstrap(monkeypatch, config):
     monkeypatch.setattr(_cfg, "load_config", lambda: config)
     monkeypatch.setattr(_episode, "_default_date", lambda: "2026-06-10")
     monkeypatch.setattr(_episode, "_default_edition", lambda: "am")
+    # Default: pretend we're 1h15m past the AM generate slot, matching the
+    # scheduled 06:15 PT watchdog firing — inside the ±2h window so tests
+    # exercise the freshness check itself, not the schedule-window skip.
+    monkeypatch.setattr(_episode, "hours_since_generate_slot", lambda edition: 1.25)
 
 
 @mock_aws
@@ -120,3 +124,56 @@ def test_cli_watchdog_exits_one_when_missing(aws_env, _stub_bootstrap):
     )
     result = CliRunner().invoke(app, ["watchdog"])
     assert result.exit_code == 1, result.output
+
+
+@mock_aws
+def test_cli_watchdog_skips_when_invoked_off_schedule(aws_env, _stub_bootstrap, monkeypatch):
+    """Reproduces the 2026-07-03 false page: a timer re-armed ~11h after the
+    generate slot must skip (exit 0, no freshness check) rather than alerting
+    on an episode that's simply old relative to `max_age_hours`, not actually
+    stale relative to when it should be checked."""
+    from typer.testing import CliRunner
+    from morning_signal import episode as _episode
+    from morning_signal.cli import app
+
+    monkeypatch.setattr(_episode, "hours_since_generate_slot", lambda edition: 11.7)
+    # No episode written at all — if the schedule-window guard didn't fire
+    # first, this would raise EpisodeMissing and exit 1.
+    boto3.client("s3", region_name=REGION).create_bucket(
+        Bucket=BUCKET, CreateBucketConfiguration={"LocationConstraint": REGION}
+    )
+    result = CliRunner().invoke(app, ["watchdog"])
+    assert result.exit_code == 0, result.output
+    assert "SKIP" in result.output
+
+
+@mock_aws
+def test_cli_watchdog_skips_when_invoked_before_generate_slot(aws_env, _stub_bootstrap, monkeypatch):
+    """A negative elapsed (invoked before today's generate slot has fired,
+    e.g. an overnight reinstall) must also skip, not check a not-yet-produced
+    episode."""
+    from typer.testing import CliRunner
+    from morning_signal import episode as _episode
+    from morning_signal.cli import app
+
+    monkeypatch.setattr(_episode, "hours_since_generate_slot", lambda edition: -0.5)
+    boto3.client("s3", region_name=REGION).create_bucket(
+        Bucket=BUCKET, CreateBucketConfiguration={"LocationConstraint": REGION}
+    )
+    result = CliRunner().invoke(app, ["watchdog"])
+    assert result.exit_code == 0, result.output
+    assert "SKIP" in result.output
+
+
+def test_hours_since_generate_slot_am_pm():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from morning_signal import episode as _episode
+
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    am_expected = (now - now.replace(hour=5, minute=0, second=0, microsecond=0)).total_seconds() / 3600.0
+    pm_expected = (now - now.replace(hour=17, minute=0, second=0, microsecond=0)).total_seconds() / 3600.0
+
+    assert _episode.hours_since_generate_slot("am") == pytest.approx(am_expected, abs=0.01)
+    assert _episode.hours_since_generate_slot("pm") == pytest.approx(pm_expected, abs=0.01)
