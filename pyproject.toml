@@ -37,7 +37,7 @@ dependencies = [
     # trading_calendar) live in the public MIT `krepis` foundation library.
     # morning-signal is MIT and depends down onto krepis (also MIT); the
     # earlier vendored copies under _vendor/nousergon/ are removed.
-    "krepis[anthropic]>=0.9.0",
+    "krepis[anthropic]>=0.10.3",
     "pydantic>=2.0",
     # Pydantic v2 cannot eval PEP 604 `str | None` field annotations under
     # Python 3.9 even with `from __future__ import annotations` (mirrors krepis).

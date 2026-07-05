@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 
 import pytest
+from krepis import http_retry
 
 from morning_signal import tts
 
@@ -135,7 +136,7 @@ def test_adjust_speed_retries_then_succeeds(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(tts.subprocess, "run", fake_run)
-    monkeypatch.setattr(tts.time, "sleep", lambda s: None)  # no real backoff
+    monkeypatch.setattr(http_retry._time, "sleep", lambda s: None)
 
     tts._adjust_speed(path, 1.5)
 
@@ -154,7 +155,7 @@ def test_adjust_speed_raises_after_exhausting_retries(monkeypatch, tmp_path, cap
         raise subprocess.CalledProcessError(-6, cmd, stderr=b"out of memory\nAborted")
 
     monkeypatch.setattr(tts.subprocess, "run", always_abort)
-    monkeypatch.setattr(tts.time, "sleep", lambda s: None)
+    monkeypatch.setattr(http_retry._time, "sleep", lambda s: None)
 
     with caplog.at_level("ERROR"), pytest.raises(subprocess.CalledProcessError):
         tts._adjust_speed(path, 1.5, attempts=3)
@@ -178,3 +179,35 @@ def test_tts_google_missing_dep_raises_with_install_hint(monkeypatch, tmp_path):
 
     with pytest.raises(ImportError, match=r"morning-signal\[google\]"):
         tts.tts_google("hi", tmp_path / "ep.mp3", {"tts": {"engine": "google"}})
+
+
+def _fake_google_service_unavailable(msg: str = "503 The service is currently unavailable."):
+    """Build an exception that passes ``_is_transient_tts_error``."""
+    cls = type("ServiceUnavailable", (Exception,), {"__module__": "google.api_core.exceptions"})
+    return cls(msg)
+
+
+def test_tts_google_retries_transient_503_per_chunk(monkeypatch, tmp_path):
+    """A 503 on one chunk should retry and complete — not abort the episode."""
+    gtts = pytest.importorskip("google.cloud.texttospeech")
+
+    calls = {"n": 0}
+
+    class _FakeResp:
+        audio_content = b"ID3-fake-mp3-bytes"
+
+    class _FakeClient:
+        def synthesize_speech(self, *, input, voice, audio_config):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _fake_google_service_unavailable()
+            return _FakeResp()
+
+    monkeypatch.setattr(gtts, "TextToSpeechClient", lambda *a, **k: _FakeClient())
+    monkeypatch.setattr(http_retry._time, "sleep", lambda s: None)
+
+    out = tmp_path / "ep.mp3"
+    tts.tts_google("Hello world.", out, {"tts": {"engine": "google", "speed": 1.0}})
+
+    assert out.exists()
+    assert calls["n"] == 2

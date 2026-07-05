@@ -12,12 +12,30 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
-import time
 from pathlib import Path
+
+from krepis.http_retry import (
+    call_with_retry,
+    is_transient_boto_error,
+    is_transient_google_error,
+)
 
 from morning_signal.aws import _aws_client
 
 log = logging.getLogger("morning-signal")
+
+# Outer retry budget for TTS provider calls. Google Cloud's gRPC client retries
+# transient errors internally, but when that budget exhausts (503 blips during
+# Chirp3 HD synthesis — 2026-07-05 AM) the episode still dies unless we retry
+# at the chunk level with a longer backoff via krepis.call_with_retry.
+_TTS_MAX_ATTEMPTS = 5
+_TTS_BACKOFF_BASE = 2.0
+_TTS_BACKOFF_CAP = 60.0
+
+
+def _is_transient_tts_error(exc: BaseException) -> bool:
+    """Provider-side blips worth a bounded retry — not auth / 400-class."""
+    return is_transient_google_error(exc) or is_transient_boto_error(exc)
 
 
 def synthesize(script: str, output_path: Path, config: dict) -> None:
@@ -53,11 +71,19 @@ def tts_polly(script: str, output_path: Path, config: dict) -> None:
 
     temp_files = []
     for i, chunk in enumerate(chunks):
-        resp = polly.synthesize_speech(
-            Text=chunk,
-            OutputFormat="mp3",
-            VoiceId=voice_id,
-            Engine=engine,
+        resp = call_with_retry(
+            lambda c=chunk: polly.synthesize_speech(
+                Text=c,
+                OutputFormat="mp3",
+                VoiceId=voice_id,
+                Engine=engine,
+            ),
+            is_retryable=_is_transient_tts_error,
+            max_attempts=_TTS_MAX_ATTEMPTS,
+            backoff_base=_TTS_BACKOFF_BASE,
+            backoff_cap=_TTS_BACKOFF_CAP,
+            label=f"Polly chunk {i + 1}/{len(chunks)}",
+            logger=log,
         )
         temp_path = output_path.parent / f"_chunk_{i:03d}.mp3"
         with open(temp_path, "wb") as f:
@@ -115,8 +141,16 @@ def tts_google(script: str, output_path: Path, config: dict) -> None:
 
     temp_files = []
     for i, chunk in enumerate(chunks):
-        resp = client.synthesize_speech(
-            input=gtts.SynthesisInput(text=chunk), voice=voice, audio_config=audio_cfg
+        resp = call_with_retry(
+            lambda c=chunk: client.synthesize_speech(
+                input=gtts.SynthesisInput(text=c), voice=voice, audio_config=audio_cfg
+            ),
+            is_retryable=_is_transient_tts_error,
+            max_attempts=_TTS_MAX_ATTEMPTS,
+            backoff_base=_TTS_BACKOFF_BASE,
+            backoff_cap=_TTS_BACKOFF_CAP,
+            label=f"Google TTS chunk {i + 1}/{len(chunks)}",
+            logger=log,
         )
         temp_path = output_path.parent / f"_gchunk_{i:03d}.mp3"
         temp_path.write_bytes(resp.audio_content)
@@ -219,37 +253,43 @@ def _concat_mp3s(files: list[Path], output: Path) -> None:
 def _adjust_speed(path: Path, speed: float, *, attempts: int = 3) -> None:
     """Change playback speed without altering pitch using ffmpeg atempo filter.
 
-    Retries with backoff: the production host is memory-constrained (~916 MB,
-    shared with other services), and under transient memory pressure the static
-    ffmpeg build has been observed to thrash on swap for ~50 s and then ``abort()``
-    (SIGABRT) on a failed allocation — killing the whole episode at the very last
-    step (2026-05-30 Sat AM). A bounded retry rides out the transient pressure; on
-    final failure we raise loud and surface ffmpeg's captured stderr (which
-    ``check=True`` otherwise swallows) so the real cause is in the logs, not lost.
+    Retries with krepis full-jitter backoff: the production host is memory-
+    constrained (~916 MB, shared with other services), and under transient memory
+    pressure the static ffmpeg build has been observed to thrash on swap for ~50 s
+    and then ``abort()`` (SIGABRT) on a failed allocation — killing the whole
+    episode at the very last step (2026-05-30 Sat AM). A bounded retry rides out
+    the transient pressure; on final failure we raise loud and surface ffmpeg's
+    captured stderr (which ``check=True`` otherwise swallows).
     """
     log.info(f"Adjusting speed to {speed}x...")
     tmp = path.with_suffix(".tmp.mp3")
     cmd = ["ffmpeg", "-y", "-i", str(path), "-filter:a", f"atempo={speed}", "-vn", str(tmp)]
-    for attempt in range(1, attempts + 1):
+
+    def _run_ffmpeg() -> None:
         try:
             subprocess.run(cmd, capture_output=True, check=True)
-            tmp.replace(path)
-            log.info(f"Speed adjusted to {speed}x")
-            return
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError:
             tmp.unlink(missing_ok=True)
-            stderr = (e.stderr or b"").decode("utf-8", "replace").strip()
-            tail = "\n".join(stderr.splitlines()[-8:])
-            if attempt < attempts:
-                backoff = 5 * attempt
-                log.warning(
-                    f"ffmpeg atempo failed (attempt {attempt}/{attempts}, rc={e.returncode}); "
-                    f"retrying in {backoff}s. stderr tail:\n{tail}"
-                )
-                time.sleep(backoff)
-                continue
-            log.error(
-                f"ffmpeg atempo failed after {attempts} attempts (rc={e.returncode}). "
-                f"stderr tail:\n{tail}"
-            )
             raise
+
+    try:
+        call_with_retry(
+            _run_ffmpeg,
+            is_retryable=lambda exc: isinstance(exc, subprocess.CalledProcessError),
+            max_attempts=attempts,
+            backoff_base=2.0,
+            backoff_cap=30.0,
+            label="ffmpeg atempo",
+            logger=log,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode("utf-8", "replace").strip()
+        tail = "\n".join(stderr.splitlines()[-8:])
+        log.error(
+            f"ffmpeg atempo failed after {attempts} attempts (rc={e.returncode}). "
+            f"stderr tail:\n{tail}"
+        )
+        raise
+
+    tmp.replace(path)
+    log.info(f"Speed adjusted to {speed}x")
