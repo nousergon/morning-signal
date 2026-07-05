@@ -45,7 +45,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "krepis[anthropic]>=0.10.3" || \
-            pip install "krepis[anthropic] @ git+https://github.com/nousergon/krepis.git@feat/call-with-retry"
+            pip install "krepis[anthropic] @ git+https://github.com/nousergon/krepis.git@main"
 
       - name: Install package
         run: |
