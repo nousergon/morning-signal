@@ -169,6 +169,16 @@ def _maybe_load_from_ssm() -> None:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         os.environ["ANTHROPIC_API_KEY"] = fetch("/morning-signal/anthropic-api-key")
 
+    # OpenRouter key — optional. Not needed for production generation (still
+    # anthropic-transport only) or by most installs; consumed by
+    # scripts/oss_bakeoff.py (config#1659 Phase B shadow-canary) and by the
+    # ``llm`` flip surface once/if a session flips it to an openrouter spec.
+    # Absent for any install that hasn't provisioned it — never blocks boot.
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        openrouter_key = fetch_optional("/morning-signal/openrouter-api-key")
+        if openrouter_key:
+            os.environ["OPENROUTER_API_KEY"] = openrouter_key
+
     # Flow-doctor / Telegram creds. Local env-var overrides win (so
     # one-off local debugging stays cheap); SSM fills in otherwise.
     # Optional — installs with notifications.enabled=false don't need

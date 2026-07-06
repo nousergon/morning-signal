@@ -346,6 +346,64 @@ def test_maybe_load_from_ssm_respects_local_env_override(
     assert os.environ["FLOW_DOCTOR_TELEGRAM_CHAT_ID"] == "8606899594"
 
 
+@mock_aws
+def test_maybe_load_from_ssm_loads_openrouter_key_when_present(
+    fresh_ge_module, aws_env, monkeypatch
+):
+    """The optional OpenRouter key (config#1659 Phase B / shadow-canary use)
+    flows into OPENROUTER_API_KEY when the SSM param exists. Not required
+    for production generation (still anthropic-transport only)."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    _seed_ssm_and_s3(extra_ssm_params={
+        "/morning-signal/openrouter-api-key": "sk-or-fake-key",
+    })
+
+    fresh_ge_module._maybe_load_from_ssm()
+
+    assert os.environ["OPENROUTER_API_KEY"] == "sk-or-fake-key"
+
+
+@mock_aws
+def test_maybe_load_from_ssm_tolerates_missing_openrouter_key(
+    fresh_ge_module, aws_env, monkeypatch
+):
+    """Installs that haven't provisioned the OpenRouter key yet must still
+    boot — production generation doesn't need it until Phase B flips."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    _seed_ssm_and_s3()  # no openrouter key seeded
+
+    fresh_ge_module._maybe_load_from_ssm()
+
+    assert "OPENROUTER_API_KEY" not in os.environ
+
+
+@mock_aws
+def test_maybe_load_from_ssm_openrouter_local_override_wins(
+    fresh_ge_module, aws_env, monkeypatch
+):
+    """A pre-set OPENROUTER_API_KEY (local debugging) is not overwritten."""
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", REGION_OTHER)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "local-override-key")
+
+    _seed_ssm_and_s3(extra_ssm_params={
+        "/morning-signal/openrouter-api-key": "ssm-key",
+    })
+
+    fresh_ge_module._maybe_load_from_ssm()
+
+    assert os.environ["OPENROUTER_API_KEY"] == "local-override-key"
+
+
 # ── publish_to_s3 ────────────────────────────────────────────────────────────
 
 
