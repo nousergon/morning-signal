@@ -45,11 +45,15 @@ dependencies = [
     # reasoning-capable OpenRouter candidate can burn its whole output
     # budget on chain-of-thought and return empty content even at a
     # generous max_tokens (reproduced live 2026-07-06 against Kimi K2.6).
-    # >=0.11.1 for the server_tool_use_details.web_search_requests fix
-    # (krepis#17) — without it usage.web_search_requests always reads 0
-    # on OpenRouter regardless of real search activity, permanently
-    # breaking the min_web_searches floor on that transport.
-    "krepis[anthropic,openai]>=0.11.1",
+    # >=0.11.2 for the corrected server_tool_use_details fix (krepis#17
+    # found the right field name but read it via getattr on what's
+    # actually a plain dict — an unmodeled Pydantic extra field, not an
+    # attribute object; krepis#18 fixed the access pattern). Without it
+    # usage.web_search_requests always reads 0 on OpenRouter regardless
+    # of real search activity, permanently breaking the min_web_searches
+    # floor on that transport — confirmed live re-running the config#1659
+    # bakeoff on 0.11.1 before this fix landed.
+    "krepis[anthropic,openai]>=0.11.2",
     "pydantic>=2.0",
     # Pydantic v2 cannot eval PEP 604 `str | None` field annotations under
     # Python 3.9 even with `from __future__ import annotations` (mirrors krepis).
