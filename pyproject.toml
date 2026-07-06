@@ -41,7 +41,11 @@ dependencies = [
     # path of krepis.llm.LLMClient — needed by scripts/oss_bakeoff.py
     # (config#1659 Phase B shadow canary) even though production generation
     # stays on the anthropic transport until the bakeoff gate is met.
-    "krepis[anthropic,openai]>=0.10.3",
+    # >=0.11.0 for ModelSpec.reasoning (krepis#16) — without it a
+    # reasoning-capable OpenRouter candidate can burn its whole output
+    # budget on chain-of-thought and return empty content even at a
+    # generous max_tokens (reproduced live 2026-07-06 against Kimi K2.6).
+    "krepis[anthropic,openai]>=0.11.0",
     "pydantic>=2.0",
     # Pydantic v2 cannot eval PEP 604 `str | None` field annotations under
     # Python 3.9 even with `from __future__ import annotations` (mirrors krepis).
