@@ -114,15 +114,6 @@ def _build_canary_payload(
 
 
 def main() -> int:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        log.error(
-            "canary: ANTHROPIC_API_KEY not set. Production runs route via "
-            "SSM bootstrap; this likely means SSM fetch failed or the env "
-            "var was stripped from the systemd unit."
-        )
-        return 1
-
     try:
         _maybe_load_from_ssm()
     except Exception as exc:
@@ -132,6 +123,25 @@ def main() -> int:
             "service to ExecStart.",
             type(exc).__name__,
             exc,
+        )
+        return 1
+
+    # Checked AFTER the bootstrap attempt, not before: in production
+    # (MORNING_SIGNAL_USE_SSM=1) ANTHROPIC_API_KEY is not set by the
+    # systemd unit's Environment= directives at all — _maybe_load_from_ssm()
+    # is what populates it, from /morning-signal/anthropic-api-key. Checking
+    # for the var before calling that bootstrap meant this script could
+    # never actually pass when run the way ExecStartPre/an operator would
+    # run it against the live SSM path; only a local run with the key
+    # pre-exported (bypassing SSM) ever exercised this successfully.
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        log.error(
+            "canary: ANTHROPIC_API_KEY not set even after the SSM bootstrap "
+            "attempt. Either /morning-signal/anthropic-api-key is missing/"
+            "unreadable in SSM (with MORNING_SIGNAL_USE_SSM=1), or this is a "
+            "local run without MORNING_SIGNAL_USE_SSM set and without "
+            "ANTHROPIC_API_KEY exported directly."
         )
         return 1
 

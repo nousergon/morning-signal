@@ -14,11 +14,14 @@ hitting the real API. Live API coverage is the CI smoke
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import boto3
 import pytest
+from moto import mock_aws
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -130,6 +133,75 @@ def test_canary_returns_1_on_anthropic_400(canary_module):
 
     with patch.dict(sys.modules, {"anthropic": fake_anthropic}):
         assert canary_module.main() == 1
+
+
+# ── SSM-sourced key (2026-07-06 bootstrap-order bug) ─────────────────────────
+#
+# Production (MORNING_SIGNAL_USE_SSM=1) never sets ANTHROPIC_API_KEY via the
+# systemd unit's Environment= directives — _maybe_load_from_ssm() is what
+# populates it, from /morning-signal/anthropic-api-key. The canary used to
+# check for the env var BEFORE calling that bootstrap, so it could never
+# actually pass when run the way the real service is invoked; only a local
+# run with the key pre-exported (bypassing SSM entirely) ever exercised the
+# success path. This locks down the fix: SSM is the ONLY source of the key
+# here (no local ANTHROPIC_API_KEY pre-set), matching the live production
+# shape.
+
+
+@mock_aws
+def test_canary_succeeds_when_key_comes_only_from_ssm(monkeypatch):
+    region = "us-east-1"
+    monkeypatch.setenv("MORNING_SIGNAL_USE_SSM", "1")
+    monkeypatch.setenv("MORNING_SIGNAL_SSM_REGION", region)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("MORNING_SIGNAL_CANARY_EDITION", raising=False)
+
+    ssm = boto3.client("ssm", region_name=region)
+    ssm.put_parameter(
+        Name="/morning-signal/anthropic-api-key",
+        Value="sk-from-ssm-only", Type="SecureString",
+    )
+    ssm.put_parameter(
+        Name="/morning-signal/config-yaml",
+        Value=(
+            "s3_bucket: test-bucket\n"
+            "claude_model: claude-sonnet-4-6\n"
+            "max_tokens: 4096\n"
+            "web_search_max_uses: 20\n"
+        ),
+        Type="SecureString",
+    )
+
+    s3 = boto3.client("s3", region_name="us-west-2")
+    s3.create_bucket(
+        Bucket="test-bucket",
+        CreateBucketConfiguration={"LocationConstraint": "us-west-2"},
+    )
+    s3.put_object(Bucket="test-bucket", Key="prompts/prompt.md", Body=b"Weekday prompt.")
+
+    if "canary" in sys.modules:
+        del sys.modules["canary"]
+    canary_module = importlib.import_module("canary")
+
+    fake_resp = MagicMock()
+    fake_resp.stop_reason = "max_tokens"
+    fake_resp.usage.input_tokens = 1234
+    fake_resp.usage.output_tokens = 1
+
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_resp
+
+    fake_anthropic = MagicMock()
+    fake_anthropic.Anthropic.return_value = fake_client
+    fake_anthropic.BadRequestError = type("BadRequestError", (Exception,), {})
+    fake_anthropic.APIStatusError = type("APIStatusError", (Exception,), {})
+
+    with patch.dict(sys.modules, {"anthropic": fake_anthropic}):
+        assert canary_module.main() == 0
+
+    # The key that reached the Anthropic client came from SSM, not env.
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-from-ssm-only"
+    fake_client.messages.create.assert_called_once()
 
 
 def test_canary_returns_1_on_anthropic_5xx(canary_module):
