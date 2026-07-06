@@ -188,6 +188,31 @@ def test_candidate_specs_carry_reasoning_exclude(bakeoff_module, monkeypatch):
         assert spec.reasoning == {"exclude": True}
 
 
+def test_main_assumes_runner_role_before_ssm_bootstrap(bakeoff_module, monkeypatch):
+    """2026-07-06 regression: main() used to call _maybe_load_from_ssm()
+    without first assuming the runner role — see the identical fix +
+    rationale in tests/test_canary.py."""
+    from morning_signal import aws as _aws_mod
+
+    sentinel = object()
+    observed = []
+
+    monkeypatch.setattr(_aws_mod, "_load_runner_session", lambda: sentinel)
+    monkeypatch.setattr(_aws_mod, "_AWS_SESSION", None)
+
+    def fake_maybe_load_from_ssm():
+        observed.append(_aws_mod._AWS_SESSION)
+        raise RuntimeError("stop here — order already observed")
+
+    monkeypatch.setattr(bakeoff_module, "_maybe_load_from_ssm", fake_maybe_load_from_ssm)
+    monkeypatch.setattr(sys, "argv", ["oss_bakeoff.py", "--date", "2026-07-06"])
+
+    result = bakeoff_module.main()
+
+    assert result == 1
+    assert observed == [sentinel]
+
+
 def test_main_fails_without_openrouter_key(bakeoff_module, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(sys, "argv", ["oss_bakeoff.py", "--date", "2026-07-06"])
