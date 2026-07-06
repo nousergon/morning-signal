@@ -75,6 +75,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from krepis.llm import LLMClient, SearchOptions  # noqa: E402
 from krepis.llm_config import ModelSpec  # noqa: E402
 
+from morning_signal import aws as _aws  # noqa: E402
 from morning_signal.aws import _aws_client, _maybe_load_from_ssm  # noqa: E402
 from morning_signal.claude import build_episode_request, resolve_llm_spec  # noqa: E402
 from morning_signal.config import load_config  # noqa: E402
@@ -282,6 +283,15 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        # Mirrors episode.py/cli.py's bootstrap order exactly: assume the
+        # runner role BEFORE touching SSM/S3. Missing this step silently
+        # falls back to the box's own EC2 instance-profile credentials
+        # (alpha-engine-dashboard-role), which have no S3 grant on
+        # morning-signal-podcast at all — masked for months by that
+        # bucket's public-read policy (fixed 2026-07-06, PR #104) until
+        # this exact script's own verification run surfaced it as an
+        # AccessDenied on prompts/prompt.md.
+        _aws._AWS_SESSION = _aws._load_runner_session()
         _maybe_load_from_ssm()
     except Exception as exc:
         log.error(
