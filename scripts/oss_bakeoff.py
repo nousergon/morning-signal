@@ -1,31 +1,44 @@
-"""Shadow-canary bakeoff: prod (Anthropic) vs. Phase-B candidate (OpenRouter
-Kimi K2.6) coverage-guard parity — config#1659, scope item 5.
+"""Shadow-canary bakeoff: prod (Anthropic) vs. Phase-B OSS candidates
+(OpenRouter) coverage-guard parity — config#1659, scope item 5.
 
-Brian's ratified destination for morning-signal (2026-07-03) is
-``openrouter:moonshotai/kimi-k2.6`` + the ``openrouter:web_search`` server
+Brian's ratified destination for morning-signal (2026-07-03) is an
+open-weight model via OpenRouter + the ``openrouter:web_search`` server
 tool. The live ``llm`` config/SSM flip is gated (No-Shortcuts) on this
 script's evidence: three production incident-guards (``min_web_searches``,
 ``required_search_topics``, forced-search recovery) were re-keyed to work
 off whichever signal a transport actually exposes (see ``claude.py`` and
 ``search_telemetry.py``), but that re-key needs to be PROVEN safe against
-real OpenRouter/Kimi responses before it governs a live edition — this
-script is that proof.
+real candidate responses before it governs a live edition — this script is
+that proof.
+
+Two candidates run side by side against the same prompt (2026-07-06,
+Artificial Analysis Intelligence Index — both tie for #1 among open-weight
+models): ``moonshotai/kimi-k2.6`` (the original config#1659 pick, also the
+top open-weight model for agentic/tool-use benchmarks) and
+``xiaomi/mimo-v2.5-pro`` (ties Kimi on general intelligence, ~4x cheaper on
+completion tokens, 1M vs 256K context). Both are reasoning models and both
+carry ``reasoning: {"exclude": true}`` (krepis>=0.11.0,
+``ModelSpec.reasoning``) — without it, a reasoning-capable model can spend
+its entire output budget on invisible chain-of-thought and return an
+empty ``message.content`` even at a generous ``max_tokens`` (reproduced
+live 2026-07-06 against Kimi K2.6 with the real production prompt:
+``finish_reason="stop"``, ~15K reasoning chars, ~1 char of actual content).
 
 For a given (date, edition) it builds ONE shared prompt + guard
-configuration via ``claude.build_episode_request`` (so both sides see the
+configuration via ``claude.build_episode_request`` (so every side sees the
 EXACT same system prompt, user message, and ``required_search_topics`` the
-real production run would use), then issues two independent grounded
-calls — the current production spec (``resolve_llm_spec``, still Anthropic
-per Phase A) and the OpenRouter candidate spec — and records a parity
-comparison to a JSONL log. NEITHER side is published or TTS'd; this never
-touches ``episode.py``, the RSS feed, or ``_config.EPISODES_DIR`` (the real
+real production run would use), then issues one grounded call per side —
+the current production spec (``resolve_llm_spec``, still Anthropic per
+Phase A) plus one per candidate — and records a parity comparison to a
+JSONL log. NO side is published or TTS'd; this never touches
+``episode.py``, the RSS feed, or ``_config.EPISODES_DIR`` (the real
 episode's telemetry sinks) — it is a side-channel measurement only.
 
 Run daily (cron/systemd timer, alongside the real production pipeline) for
-the ≥2-week bakeoff window. Once ``unmet_topics`` matches on both sides for
-≥2 weeks straight (config#1659's closes-when criterion), the live ``llm``
-flip can be scheduled with an operator confident the coverage guards hold
-on the candidate transport.
+the ≥2-week bakeoff window. Once a candidate's ``unmet_topics`` matches
+prod for ≥2 weeks straight (config#1659's closes-when criterion), the live
+``llm`` flip can be scheduled with an operator confident the coverage
+guards hold on that candidate.
 
 Usage::
 
@@ -34,7 +47,7 @@ Usage::
 Exit codes: 0 on a completed comparison (regardless of parity outcome — a
 mismatch is exactly what this script exists to surface, not an error);
 1 on a setup/run failure (missing OPENROUTER_API_KEY, SSM bootstrap
-failure, LLM call failure on either side).
+failure, LLM call failure on any side).
 """
 
 from __future__ import annotations
@@ -65,10 +78,15 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-# The Phase B destination model named in config#1659. Not config-driven —
-# this script's whole job is validating THIS specific candidate before it
-# becomes the config-driven ``llm`` flip value.
-CANDIDATE_MODEL = "moonshotai/kimi-k2.6"
+# The Phase B candidate pool (config#1659). Not config-driven — this
+# script's whole job is generating the evidence that eventually picks ONE
+# of these (or neither) for the live ``llm`` flip value. ``reasoning``:
+# see the module docstring — both are reasoning models and need this to
+# avoid the empty-content failure mode found 2026-07-06.
+CANDIDATES = [
+    {"label": "kimi-k2.6", "model": "moonshotai/kimi-k2.6", "reasoning": {"exclude": True}},
+    {"label": "mimo-v2.5-pro", "model": "xiaomi/mimo-v2.5-pro", "reasoning": {"exclude": True}},
+]
 
 # Where bakeoff JSONL records land. Deliberately separate from
 # _config.EPISODES_DIR (the real production episode's telemetry sinks) —
@@ -127,15 +145,31 @@ def _run_side(
     }
 
 
+def _parity(prod: dict, candidate: dict) -> dict:
+    return {
+        "both_met_min_web_searches": (
+            prod["min_web_searches_met"] and candidate["min_web_searches_met"]
+        ),
+        "unmet_topics_match": (
+            set(prod["unmet_topics"]) == set(candidate["unmet_topics"])
+        ),
+        # The gate this script exists to catch: candidate silently
+        # covering FEWER required topics than prod would on the same
+        # prompt/config. Equal or better is fine; strictly worse is the
+        # signal that keeps the live flip gated.
+        "candidate_strictly_worse": (
+            len(candidate["unmet_topics"]) > len(prod["unmet_topics"])
+        ),
+    }
+
+
 def run_bakeoff(config: dict, date_str: str, edition: str) -> dict:
-    """Build the shared episode request once, run both sides, return the
-    parity comparison record (also written to the JSONL log by ``main``).
+    """Build the shared episode request once, run prod + every candidate,
+    return the parity comparison record (also written to the JSONL log by
+    ``main``).
     """
     req = build_episode_request(config, date_str, edition)
     prod_spec = resolve_llm_spec(config)
-    candidate_spec = ModelSpec(
-        "openrouter", CANDIDATE_MODEL, max_tokens=config.get("max_tokens", 4096),
-    )
 
     prod = _run_side(
         label="prod", spec=prod_spec, config=config,
@@ -143,12 +177,24 @@ def run_bakeoff(config: dict, date_str: str, edition: str) -> dict:
         required_topics=req["required_topics"],
         effective_edition=req["effective_edition"],
     )
-    candidate = _run_side(
-        label="candidate", spec=candidate_spec, config=config,
-        prompt_text=req["prompt_text"], user_content=req["user_content"],
-        required_topics=req["required_topics"],
-        effective_edition=req["effective_edition"],
-    )
+
+    candidates: dict = {}
+    for c in CANDIDATES:
+        spec = ModelSpec(
+            "openrouter", c["model"],
+            max_tokens=config.get("max_tokens", 4096),
+            reasoning=c.get("reasoning"),
+        )
+        result = _run_side(
+            label=c["label"], spec=spec, config=config,
+            prompt_text=req["prompt_text"], user_content=req["user_content"],
+            required_topics=req["required_topics"],
+            effective_edition=req["effective_edition"],
+        )
+        candidates[c["label"]] = {
+            **result,
+            "parity": _parity(prod, result),
+        }
 
     return {
         "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
@@ -159,32 +205,17 @@ def run_bakeoff(config: dict, date_str: str, edition: str) -> dict:
             for t in req["required_topics"]
         ],
         "prod": prod,
-        "candidate": candidate,
-        "parity": {
-            "both_met_min_web_searches": (
-                prod["min_web_searches_met"] and candidate["min_web_searches_met"]
-            ),
-            "unmet_topics_match": (
-                set(prod["unmet_topics"]) == set(candidate["unmet_topics"])
-            ),
-            # The gate this script exists to catch: candidate silently
-            # covering FEWER required topics than prod would on the same
-            # prompt/config. Equal or better is fine; strictly worse is the
-            # signal that keeps the live flip gated.
-            "candidate_strictly_worse": (
-                len(candidate["unmet_topics"]) > len(prod["unmet_topics"])
-            ),
-        },
+        "candidates": candidates,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Shadow-canary bakeoff: prod (Anthropic) vs. Phase-B candidate "
-            "(OpenRouter Kimi K2.6) coverage-guard parity (config#1659). "
-            "Runs a real (billed) grounded call on each side; publishes "
-            "neither."
+            "Shadow-canary bakeoff: prod (Anthropic) vs. Phase-B OSS "
+            "candidates (OpenRouter) coverage-guard parity (config#1659). "
+            "Runs a real (billed) grounded call per side; publishes none "
+            "of them."
         )
     )
     parser.add_argument(
@@ -236,17 +267,26 @@ def main() -> int:
     with out_path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
 
-    log.info(
-        "bakeoff %s-%s: prod unmet=%s candidate unmet=%s parity=%s -> %s",
-        date_str, args.edition,
-        record["prod"]["unmet_topics"], record["candidate"]["unmet_topics"],
-        record["parity"], out_path,
-    )
-    if record["parity"]["candidate_strictly_worse"]:
-        log.warning(
-            "bakeoff %s-%s: candidate covered FEWER required topics than "
-            "prod on the identical prompt — do not advance the flip until "
-            "this stops recurring.",
+    any_worse = False
+    for label, candidate in record["candidates"].items():
+        log.info(
+            "bakeoff %s-%s: prod unmet=%s %s unmet=%s parity=%s -> %s",
+            date_str, args.edition,
+            record["prod"]["unmet_topics"], label, candidate["unmet_topics"],
+            candidate["parity"], out_path,
+        )
+        if candidate["parity"]["candidate_strictly_worse"]:
+            any_worse = True
+            log.warning(
+                "bakeoff %s-%s: %s covered FEWER required topics than prod "
+                "on the identical prompt — do not advance this candidate's "
+                "flip until this stops recurring.",
+                date_str, args.edition, label,
+            )
+    if not any_worse:
+        log.info(
+            "bakeoff %s-%s: no candidate was strictly worse than prod this "
+            "run.",
             date_str, args.edition,
         )
     return 0

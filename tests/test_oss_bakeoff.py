@@ -74,59 +74,102 @@ def _grounded(*, provider, model, unmet_hit, web_search_requests):
     )
 
 
-class _FakeClient:
-    def __init__(self, spec: ModelSpec, **kw):
-        self.spec = spec
+def _dispatcher(plan_by_provider_or_model):
+    """A LLMClient fake dispatching by spec.provider (prod, "anthropic")
+    or spec.model (each OpenRouter candidate has a distinct model id, so
+    provider alone can't disambiguate between them)."""
 
-    def complete_grounded(self, **kw):
-        raise NotImplementedError  # overridden per-test via monkeypatch
+    class _Client:
+        def __init__(self, spec: ModelSpec, **kw):
+            self.spec = spec
+
+        def complete_grounded(self, **kw):
+            key = self.spec.model if self.spec.provider == "openrouter" else self.spec.provider
+            return plan_by_provider_or_model[key]
+
+    return _Client
 
 
-def test_run_bakeoff_reports_parity_when_both_cover_topic(bakeoff_module, monkeypatch):
-    from morning_signal.config import load_config
-
-    plan = {
-        "anthropic": _grounded(provider="anthropic", model="claude-haiku-4-5", unmet_hit=False, web_search_requests=2),
-        "openrouter": _grounded(provider="openrouter", model="moonshotai/kimi-k2.6", unmet_hit=False, web_search_requests=2),
+def _all_pass_plan(*, prod_unmet=False):
+    return {
+        "anthropic": _grounded(
+            provider="anthropic", model="claude-haiku-4-5",
+            unmet_hit=prod_unmet, web_search_requests=2,
+        ),
+        "moonshotai/kimi-k2.6": _grounded(
+            provider="openrouter", model="moonshotai/kimi-k2.6",
+            unmet_hit=False, web_search_requests=2,
+        ),
+        "xiaomi/mimo-v2.5-pro": _grounded(
+            provider="openrouter", model="xiaomi/mimo-v2.5-pro",
+            unmet_hit=False, web_search_requests=2,
+        ),
     }
 
-    class _Client(_FakeClient):
-        def complete_grounded(self, **kw):
-            return plan[self.spec.provider]
 
-    monkeypatch.setattr(bakeoff_module, "LLMClient", _Client)
+def test_run_bakeoff_reports_parity_for_every_candidate(bakeoff_module, monkeypatch):
+    from morning_signal.config import load_config
+
+    monkeypatch.setattr(bakeoff_module, "LLMClient", _dispatcher(_all_pass_plan()))
 
     config = load_config()
     record = bakeoff_module.run_bakeoff(config, "2026-07-06", "am")
 
     assert record["prod"]["unmet_topics"] == []
-    assert record["candidate"]["unmet_topics"] == []
-    assert record["parity"]["unmet_topics_match"] is True
-    assert record["parity"]["candidate_strictly_worse"] is False
-    assert record["parity"]["both_met_min_web_searches"] is True
+    assert set(record["candidates"]) == {"kimi-k2.6", "mimo-v2.5-pro"}
+    for label in ("kimi-k2.6", "mimo-v2.5-pro"):
+        candidate = record["candidates"][label]
+        assert candidate["unmet_topics"] == []
+        assert candidate["parity"]["unmet_topics_match"] is True
+        assert candidate["parity"]["candidate_strictly_worse"] is False
+        assert candidate["parity"]["both_met_min_web_searches"] is True
 
 
-def test_run_bakeoff_flags_candidate_strictly_worse(bakeoff_module, monkeypatch):
+def test_run_bakeoff_flags_one_candidate_strictly_worse(bakeoff_module, monkeypatch):
+    plan = _all_pass_plan()
+    plan["moonshotai/kimi-k2.6"] = _grounded(
+        provider="openrouter", model="moonshotai/kimi-k2.6",
+        unmet_hit=True, web_search_requests=2,
+    )
+    monkeypatch.setattr(bakeoff_module, "LLMClient", _dispatcher(plan))
+
     from morning_signal.config import load_config
-
-    plan = {
-        "anthropic": _grounded(provider="anthropic", model="claude-haiku-4-5", unmet_hit=False, web_search_requests=2),
-        "openrouter": _grounded(provider="openrouter", model="moonshotai/kimi-k2.6", unmet_hit=True, web_search_requests=2),
-    }
-
-    class _Client(_FakeClient):
-        def complete_grounded(self, **kw):
-            return plan[self.spec.provider]
-
-    monkeypatch.setattr(bakeoff_module, "LLMClient", _Client)
-
     config = load_config()
     record = bakeoff_module.run_bakeoff(config, "2026-07-06", "am")
 
-    assert record["prod"]["unmet_topics"] == []
-    assert record["candidate"]["unmet_topics"] == ["Political pulse"]
-    assert record["parity"]["unmet_topics_match"] is False
-    assert record["parity"]["candidate_strictly_worse"] is True
+    kimi = record["candidates"]["kimi-k2.6"]
+    mimo = record["candidates"]["mimo-v2.5-pro"]
+    assert kimi["unmet_topics"] == ["Political pulse"]
+    assert kimi["parity"]["candidate_strictly_worse"] is True
+    assert mimo["unmet_topics"] == []
+    assert mimo["parity"]["candidate_strictly_worse"] is False
+
+
+def test_candidate_specs_carry_reasoning_exclude(bakeoff_module, monkeypatch):
+    """Both candidates must set reasoning={"exclude": True} — the fix for
+    the empty-content bug found 2026-07-06 (krepis#16)."""
+    seen_specs = []
+
+    class _Client:
+        def __init__(self, spec, **kw):
+            seen_specs.append(spec)
+            self.spec = spec
+
+        def complete_grounded(self, **kw):
+            plan = _all_pass_plan()
+            key = self.spec.model if self.spec.provider == "openrouter" else self.spec.provider
+            return plan[key]
+
+    monkeypatch.setattr(bakeoff_module, "LLMClient", _Client)
+
+    from morning_signal.config import load_config
+    config = load_config()
+    bakeoff_module.run_bakeoff(config, "2026-07-06", "am")
+
+    candidate_specs = [s for s in seen_specs if s.provider == "openrouter"]
+    assert len(candidate_specs) == 2
+    for spec in candidate_specs:
+        assert spec.reasoning == {"exclude": True}
 
 
 def test_main_fails_without_openrouter_key(bakeoff_module, monkeypatch):
@@ -136,16 +179,7 @@ def test_main_fails_without_openrouter_key(bakeoff_module, monkeypatch):
 
 
 def test_main_writes_jsonl_on_success(bakeoff_module, monkeypatch, tmp_path):
-    plan = {
-        "anthropic": _grounded(provider="anthropic", model="claude-haiku-4-5", unmet_hit=False, web_search_requests=2),
-        "openrouter": _grounded(provider="openrouter", model="moonshotai/kimi-k2.6", unmet_hit=False, web_search_requests=2),
-    }
-
-    class _Client(_FakeClient):
-        def complete_grounded(self, **kw):
-            return plan[self.spec.provider]
-
-    monkeypatch.setattr(bakeoff_module, "LLMClient", _Client)
+    monkeypatch.setattr(bakeoff_module, "LLMClient", _dispatcher(_all_pass_plan()))
     log_dir = tmp_path / "bakeoff_out"
     monkeypatch.setenv(bakeoff_module.BAKEOFF_LOG_DIR_ENV, str(log_dir))
     monkeypatch.setattr(sys, "argv", ["oss_bakeoff.py", "--date", "2026-07-06", "--edition", "am"])
@@ -157,20 +191,12 @@ def test_main_writes_jsonl_on_success(bakeoff_module, monkeypatch, tmp_path):
     record = json.loads(out_path.read_text().strip().splitlines()[0])
     assert record["date"] == "2026-07-06"
     assert record["edition"] == "am"
-    assert record["parity"]["unmet_topics_match"] is True
+    assert record["candidates"]["kimi-k2.6"]["parity"]["unmet_topics_match"] is True
+    assert record["candidates"]["mimo-v2.5-pro"]["parity"]["unmet_topics_match"] is True
 
 
 def test_main_appends_on_repeated_runs(bakeoff_module, monkeypatch, tmp_path):
-    plan = {
-        "anthropic": _grounded(provider="anthropic", model="claude-haiku-4-5", unmet_hit=False, web_search_requests=2),
-        "openrouter": _grounded(provider="openrouter", model="moonshotai/kimi-k2.6", unmet_hit=False, web_search_requests=2),
-    }
-
-    class _Client(_FakeClient):
-        def complete_grounded(self, **kw):
-            return plan[self.spec.provider]
-
-    monkeypatch.setattr(bakeoff_module, "LLMClient", _Client)
+    monkeypatch.setattr(bakeoff_module, "LLMClient", _dispatcher(_all_pass_plan()))
     log_dir = tmp_path / "bakeoff_out"
     monkeypatch.setenv(bakeoff_module.BAKEOFF_LOG_DIR_ENV, str(log_dir))
     monkeypatch.setattr(sys, "argv", ["oss_bakeoff.py", "--date", "2026-07-06", "--edition", "am"])
