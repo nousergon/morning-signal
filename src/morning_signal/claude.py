@@ -2,12 +2,19 @@
 
 Runs through the krepis provider-agnostic adapter (``krepis.llm.LLMClient``).
 Phase A of the fleet-wide provider migration (2026-07-03): generation stays on
-the ANTHROPIC transport — the product is grounded on Anthropic's server-side
-``web_search`` tool (forced-search recovery, per-query search telemetry, and
-the coverage guard all key on it). Phase B (open-weight model via OpenRouter +
-its ``openrouter:web_search`` server tool) re-keys the coverage guard to
-citations and is gated on a shadow-canary bakeoff; the ``llm`` config knob is
-already the flip surface.
+the ANTHROPIC transport in production. The three production incident guards
+below (``min_web_searches`` floor, ``required_search_topics`` coverage, and
+forced-search recovery) are now provider-agnostic (config#1659 Phase B
+re-key): they work off whichever signal a transport actually exposes —
+Anthropic's per-query telemetry (``GroundedResult.searches``) when present,
+falling back to citations (``GroundedResult.citations``) and the normalized
+``usage.web_search_requests`` count on transports that don't expose queries
+(OpenRouter's ``openrouter:web_search`` server tool). This is what lets the
+``llm`` config knob (already the flip surface — see ``resolve_llm_spec``)
+switch production between Anthropic, OpenAI, and OpenRouter models without
+the safety net going dark. The LIVE flip itself stays gated on a ≥2-week
+shadow-canary bakeoff (``scripts/oss_bakeoff.py``) per config#1659's
+closes-when criteria — this module change is the prerequisite, not the flip.
 """
 
 from __future__ import annotations
@@ -20,7 +27,7 @@ from datetime import datetime
 
 from krepis.llm import LLMClient, SearchOptions
 from krepis.llm_capture import capture_llm_call
-from krepis.llm_config import ModelSpec, parse_model_spec
+from krepis.llm_config import LLMConfigError, ModelSpec, parse_model_spec
 from krepis.trading_calendar import is_trading_day
 
 from morning_signal import config as _config
@@ -163,6 +170,16 @@ def _invoke_and_record(
     (``SearchOptions.force_first`` → forced server-tool ``tool_choice`` on
     the anthropic transport) — used by the recovery pass rather than merely
     asking for a search in prose. Verified against the live API (2026-06-29).
+    Some transports cannot force their server-side search tool at all — the
+    OpenRouter ``openrouter:web_search`` tool has no ``tool_choice`` forcing,
+    and ``krepis.llm`` raises ``LLMConfigError`` rather than silently
+    degrading (see ``SearchOptions.force_first``). On that error this
+    function retries the SAME call with ``force_first=False``: the recovery
+    pass's escalated user message (``_coverage_recovery_directive``) already
+    carries a strongly-worded prose forcing directive, so the retry still
+    asks for the search — it just can't be hard-guaranteed on this
+    transport. That degraded guarantee is logged explicitly, never silently
+    treated as equivalent to a hard force.
 
     The krepis anthropic transport builds its payload through
     ``krepis.anthropic_payload`` — the server-tool ⊥ assistant-prefill
@@ -172,28 +189,53 @@ def _invoke_and_record(
     with the flag on raises rather than silently dropping training data
     (same disk the episode itself writes to).
     """
-    result = llm_client.complete_grounded(
-        system=prompt_text,
-        user_content=user_content,
-        search=SearchOptions(
-            max_uses=config.get("web_search_max_uses", 20),
-            force_first=force_search,
-        ),
-        max_tokens=config.get("max_tokens", 4096),
-        cache_system=True,
-    )
+
+    def _call(*, force: bool):
+        return llm_client.complete_grounded(
+            system=prompt_text,
+            user_content=user_content,
+            search=SearchOptions(
+                max_uses=config.get("web_search_max_uses", 20),
+                force_first=force,
+            ),
+            max_tokens=config.get("max_tokens", 4096),
+            cache_system=True,
+        )
+
+    try:
+        result = _call(force=force_search)
+    except LLMConfigError:
+        if not force_search:
+            raise
+        log.warning(
+            f"provider={llm_client.spec.provider!r} cannot force web_search "
+            f"via tool_choice (SearchOptions.force_first unsupported on this "
+            f"transport) — retrying the recovery pass with prose-only "
+            f"forcing. Coverage on this pass is best-effort, NOT hard-"
+            f"guaranteed the way it is on the anthropic transport."
+        )
+        result = _call(force=False)
+
     cost = record_result_cost(
         result=result,
         date_str=date_str,
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
-    n_searches = record_search_events(
+    n_recorded = record_search_events(
         searches=result.searches,
         date_str=date_str,
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
+    # Provider-agnostic search count for the min_web_searches floor.
+    # Anthropic populates BOTH result.searches (per-query, what
+    # record_search_events counts) and usage.web_search_requests (the same
+    # count, aggregated) — take the max so a transport that only exposes one
+    # of the two signals (OpenRouter: searches is always [] per
+    # krepis.llm_search, only usage.web_search_requests is populated) still
+    # reports the real count instead of a false zero.
+    n_searches = max(n_recorded, result.usage.web_search_requests)
     capture_llm_call(
         result,
         producer="morning_signal",
@@ -253,40 +295,29 @@ def _coverage_recovery_directive(
     )
 
 
-def generate_script(
+def build_episode_request(
     config: dict,
     date_str: str,
     edition: str,
     schedule_entry: dict | None | object = _LOAD_SCHEDULE,
-) -> str:
-    """Call Claude with web search to generate the podcast script.
+) -> dict:
+    """Build everything :func:`generate_script` needs to issue its grounded
+    LLM call, without calling the LLM.
 
-    ``schedule_entry``: the normalized per-date schedule entry from
-    ``schedule_override.load_schedule_override``. ``episode.main`` loads
-    the manifest once (for its skip guard) and passes the result through
-    here; direct callers can omit it (the default sentinel loads it from
-    config/S3, preserving the original call contract) or pass ``None``
-    to explicitly run regular programming. ``skip`` entries never reach
-    this function via the orchestrator; a self-loaded skip entry is
-    treated as regular programming (the skip decision belongs to
-    ``episode.main``, not here).
+    Factored out (config#1659 Phase B) so a second consumer can replay the
+    EXACT same payload + guard configuration against a different
+    ``ModelSpec`` without duplicating date/edition/schedule/news
+    construction logic — used by ``scripts/oss_bakeoff.py`` (the shadow
+    canary: same episode, prod anthropic spec vs. an openrouter candidate
+    spec, candidate output never published/aired).
 
-    Payload shape:
-      - ``system``: static production prompt with ephemeral
-        ``cache_control`` so the ~1.3K-token prefix hits the 0.1×
-        cache-read rate on every tool-loop re-read inside one call.
-      - ``messages[0]``: dynamic user preamble (date + edition + the
-        opener instruction). The opener instruction lives in the user
-        message, NOT the system block, so the static prefix stays
-        cacheable per-call.
-      - Post-process: if the response doesn't begin with the canonical
-        opener, prepend it. Belt-and-suspenders for the case where the
-        model emits a "Great, I now have enough info..." preamble.
-
-    ``max_uses`` on ``web_search`` caps server-tool fees in the runaway
-    case; 20 is above the empirical typical (~15).
+    Returns a dict: ``prompt_text``, ``user_content``, ``edition_label``,
+    ``weekend``, ``effective_edition``, ``required_topics``,
+    ``schedule_entry`` (the resolved value — may differ from the input
+    when the sentinel triggered a load, or a self-loaded ``skip`` entry was
+    downgraded to regular programming, matching :func:`generate_script`'s
+    original resolution contract).
     """
-    llm_client = LLMClient(resolve_llm_spec(config), max_retries=5)
     weekend = is_non_trading_day(date_str)
     prompt_text = load_prompt(weekend=weekend)
 
@@ -294,8 +325,6 @@ def generate_script(
     friendly_date = dt.strftime("%A, %B %-d, %Y")
     edition_label = "WEEKEND" if weekend else EDITION_LABELS[edition]
     opener = opening_line(edition, weekend)
-
-    log.info(f"Generating {edition_label} script for {friendly_date}...")
 
     # Optional pre-fetched news context (config-gated, default OFF). When
     # enabled it is a HARD requirement by default: load_news_context RAISES
@@ -358,6 +387,77 @@ def generate_script(
         f"with no preamble or acknowledgement before it:\n\n"
         f"{opener}"
     )
+
+    # required_topics construction mirrors the coverage-guard section below
+    # in generate_script — see its comment block for the full rationale
+    # (2026-06-17 tight-budget drop, 2026-06-29 blind-spot fix).
+    required_topics = config.get("required_search_topics") or []
+    if schedule_entry:
+        guard = derived_topic_guard(schedule_entry)
+        if schedule_entry["mode"] == "override":
+            required_topics = [guard] if guard else []
+        elif guard:
+            required_topics = list(required_topics) + [guard]
+    effective_edition = "weekend" if weekend else edition
+
+    return {
+        "prompt_text": prompt_text,
+        "user_content": user_content,
+        "opener": opener,
+        "edition_label": edition_label,
+        "weekend": weekend,
+        "effective_edition": effective_edition,
+        "required_topics": required_topics,
+        "schedule_entry": schedule_entry,
+    }
+
+
+def generate_script(
+    config: dict,
+    date_str: str,
+    edition: str,
+    schedule_entry: dict | None | object = _LOAD_SCHEDULE,
+) -> str:
+    """Call Claude with web search to generate the podcast script.
+
+    ``schedule_entry``: the normalized per-date schedule entry from
+    ``schedule_override.load_schedule_override``. ``episode.main`` loads
+    the manifest once (for its skip guard) and passes the result through
+    here; direct callers can omit it (the default sentinel loads it from
+    config/S3, preserving the original call contract) or pass ``None``
+    to explicitly run regular programming. ``skip`` entries never reach
+    this function via the orchestrator; a self-loaded skip entry is
+    treated as regular programming (the skip decision belongs to
+    ``episode.main``, not here).
+
+    Payload shape:
+      - ``system``: static production prompt with ephemeral
+        ``cache_control`` so the ~1.3K-token prefix hits the 0.1×
+        cache-read rate on every tool-loop re-read inside one call.
+      - ``messages[0]``: dynamic user preamble (date + edition + the
+        opener instruction). The opener instruction lives in the user
+        message, NOT the system block, so the static prefix stays
+        cacheable per-call.
+      - Post-process: if the response doesn't begin with the canonical
+        opener, prepend it. Belt-and-suspenders for the case where the
+        model emits a "Great, I now have enough info..." preamble.
+
+    ``max_uses`` on ``web_search`` caps server-tool fees in the runaway
+    case; 20 is above the empirical typical (~15).
+    """
+    llm_client = LLMClient(resolve_llm_spec(config), max_retries=5)
+    req = build_episode_request(config, date_str, edition, schedule_entry)
+    prompt_text = req["prompt_text"]
+    user_content = req["user_content"]
+    opener = req["opener"]
+    edition_label = req["edition_label"]
+    weekend = req["weekend"]
+    effective_edition = req["effective_edition"]
+    required_topics = req["required_topics"]
+    schedule_entry = req["schedule_entry"]
+
+    friendly_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %B %-d, %Y")
+    log.info(f"Generating {edition_label} script for {friendly_date}...")
 
     result, n_searches = _invoke_and_record(
         llm_client, config, prompt_text, user_content, date_str, edition
@@ -430,32 +530,20 @@ def generate_script(
     # global ``min_web_searches`` floor above stays HARD regardless — a
     # near-zero-search edition is hallucinated wholesale, a different and
     # unrecoverable failure.
-    required_topics = config.get("required_search_topics") or []
-    if schedule_entry:
-        guard = derived_topic_guard(schedule_entry)
-        if schedule_entry["mode"] == "override":
-            # An override episode intentionally drops the regular segment
-            # lineup — the config-declared per-segment guards would force a
-            # wasted recovery pass (or hard-abort under
-            # required_search_topics_fatal) over segments that were never
-            # meant to air. Only the deep dive's own guard applies. NOTE the
-            # guard carries no ``editions`` key (see derived_topic_guard):
-            # coverage filters by effective_edition ("weekend" on
-            # non-trading days), which would silently drop an "am"-scoped
-            # guard on every weekend deep dive.
-            required_topics = [guard] if guard else []
-        elif guard:
-            required_topics = list(required_topics) + [guard]
+    # (required_topics + effective_edition were computed in
+    # build_episode_request above — see its docstring/comment for the
+    # override-mode + editions-scoping rationale.)
     if required_topics:
-        effective_edition = "weekend" if weekend else edition
         fatal = config.get("required_search_topics_fatal", False)
         recover = config.get("required_search_topics_recover", True)
         # GroundedResult.text is the post-final-tool text; .searches carries
-        # the per-query events — both extracted by krepis.llm_search (the
-        # lifted morning-signal logic), no response re-parsing needed.
+        # the per-query events (anthropic-only) and .citations carries the
+        # cross-provider fallback (both extracted by krepis.llm_search) — no
+        # response re-parsing needed.
         unmet = unmet_required_topics(
             result.searches, required_topics,
             edition=effective_edition, script=result.text,
+            citations=result.citations,
         )
 
         if unmet and recover:
@@ -471,8 +559,9 @@ def generate_script(
             # than only asking for one in prose — the prose ask is the same
             # stochastic compliance that already failed on the first pass.
             # (SearchOptions.force_first → forced server-tool tool_choice;
-            # API-supported, verified live 2026-06-29. Anthropic-transport
-            # only — Phase B replaces this with a citation-count floor.)
+            # API-supported, verified live 2026-06-29. On a transport that
+            # can't force it, _invoke_and_record degrades to prose-only
+            # forcing and logs it — see its docstring.)
             try:
                 r2, n2 = _invoke_and_record(
                     llm_client, config, prompt_text, user_content + directive,
@@ -481,6 +570,7 @@ def generate_script(
                 unmet2 = unmet_required_topics(
                     r2.searches, required_topics,
                     edition=effective_edition, script=r2.text,
+                    citations=r2.citations,
                 )
                 if len(unmet2) < len(unmet):
                     log.info(

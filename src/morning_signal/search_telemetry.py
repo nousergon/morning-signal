@@ -20,6 +20,13 @@ The extractor reads ``server_tool_use`` blocks (with
 ``web_search_tool_result`` block by ``tool_use_id``. Errors in either
 the Anthropic SDK shape or the JSONL append are NOT swallowed —
 telemetry that silently degrades has no value.
+
+Per-query telemetry (this sink, ``unmet_required_topics``'s primary
+matching corpus) is an Anthropic-only capability — OpenRouter's
+``openrouter:web_search`` server tool exposes citations, not queries (see
+``krepis.llm_search``). :func:`unmet_required_topics` accepts an optional
+``citations`` fallback so the coverage guard still functions when a
+product is configured onto that transport (config#1659).
 """
 
 from __future__ import annotations
@@ -122,15 +129,31 @@ def unmet_required_topics(
     required_topics: list[dict[str, Any]],
     edition: str | None = None,
     script: str | None = None,
+    citations: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Return the names of required search topics that were under-covered.
 
     A *required search topic* is a generic, config-driven assertion that the
-    model must have issued at least ``min_matches`` (default 1) ``web_search``
-    queries whose text contains any of the topic's ``keywords``. It exists to
-    catch the failure mode where a global search floor is met but a *specific*
+    model must have grounded at least ``min_matches`` (default 1) of its
+    search activity in one of the topic's ``keywords``. It exists to catch the
+    failure mode where a global search floor is met but a *specific*
     segment — typically one with no pre-fetched-digest fallback — is silently
     skipped and written from training memory instead of live news.
+
+    Provider-agnostic matching corpus (config#1659, Phase B): the Anthropic
+    ``web_search`` server tool exposes the actual query text the model
+    issued (``searches[].query``) — the richer, more precise signal, and the
+    one every existing topic/keyword config was tuned against, so it stays
+    primary whenever present. OpenRouter's ``openrouter:web_search`` server
+    tool exposes NO query text at all (see ``krepis.llm_search`` — only
+    ``url_citation`` annotations survive the response), so when ``searches``
+    is empty this function falls back to matching keywords against
+    ``citations`` (title/snippet/url of each returned source). A citation
+    hit is a slightly weaker proxy for "the model deliberately searched this
+    topic" than a query hit, but it is the ONLY signal that transport
+    exposes — and combined with the ``aired`` check below (the topic must
+    also appear in the final spoken script) it still closes the same blind
+    spot: a segment neither grounded nor written never counts as covered.
 
     A topic is *covered* only when BOTH hold:
 
@@ -181,6 +204,15 @@ def unmet_required_topics(
     absent from the spoken script (empty list = every required topic covered).
     """
     queries = [str(s.get("query", "")).lower() for s in searches]
+    if queries:
+        corpus = queries
+    else:
+        corpus = [
+            " ".join(
+                str(c.get(k) or "") for k in ("title", "snippet", "url")
+            ).lower()
+            for c in (citations or [])
+        ]
     script_lc = script.lower() if isinstance(script, str) else None
     edition_lc = edition.lower() if isinstance(edition, str) else None
     unmet: list[str] = []
@@ -194,7 +226,7 @@ def unmet_required_topics(
         name = str(topic.get("name") or ", ".join(keywords))
         min_matches = max(1, int(topic.get("min_matches", 1)))
         matches = sum(
-            1 for q in queries if any(kw in q for kw in keywords)
+            1 for c in corpus if any(kw in c for kw in keywords)
         )
         searched = matches >= min_matches
         aired = script_lc is None or any(kw in script_lc for kw in keywords)

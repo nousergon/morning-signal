@@ -1,0 +1,137 @@
+"""Unit tests for the provider-agnostic behavior of ``claude._invoke_and_record``
+(config#1659 Phase B re-key).
+
+Two behaviors added on top of the existing Anthropic-only contract:
+
+1. A transport that cannot force its server-side search tool via
+   ``tool_choice`` (``SearchOptions.force_first`` raises ``LLMConfigError`` —
+   see ``krepis.llm``, the OpenRouter ``openrouter:web_search`` server tool)
+   degrades to a second, unforced call rather than propagating the error —
+   the recovery pass's prose directive still asks for the search, it just
+   isn't hard-guaranteed on that transport.
+2. The ``min_web_searches`` floor's search count is read from
+   ``max(len(result.searches), result.usage.web_search_requests)`` so a
+   transport that never populates per-query events (OpenRouter) still
+   reports the real count via the normalized ``usage`` field instead of a
+   false zero.
+
+Uses real ``krepis.llm`` dataclasses (``GroundedResult``, ``LLMUsage``,
+``ModelSpec``) with a duck-typed fake client — no network, no real SDK.
+"""
+
+from __future__ import annotations
+
+import pytest
+from krepis.llm import GroundedResult, LLMUsage
+from krepis.llm_config import LLMConfigError, ModelSpec
+
+from morning_signal import claude
+
+
+@pytest.fixture
+def patched(monkeypatch):
+    """Stub the telemetry sinks so _invoke_and_record's side effects never
+    touch disk — mirrors the fixture in test_claude_recovery.py."""
+    monkeypatch.setattr(claude, "record_result_cost", lambda **kw: 0.0)
+    monkeypatch.setattr(
+        claude, "record_search_events", lambda **kw: len(kw["searches"])
+    )
+    monkeypatch.setattr(claude, "capture_llm_call", lambda *a, **kw: False)
+
+
+class _FakeLLMClient:
+    """Duck-typed stand-in for ``krepis.llm.LLMClient`` — a ``spec`` plus a
+    scripted ``complete_grounded`` that returns/raises from a fixed plan.
+    """
+
+    def __init__(self, spec: ModelSpec, plan: list):
+        self.spec = spec
+        self._plan = list(plan)
+        self.force_first_calls: list[bool] = []
+
+    def complete_grounded(self, *, system, user_content, search, max_tokens, cache_system):
+        self.force_first_calls.append(search.force_first)
+        if not self._plan:
+            raise AssertionError("complete_grounded called more times than scripted")
+        step = self._plan.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+def _grounded(*, provider, searches=(), citations=(), web_search_requests=0):
+    return GroundedResult(
+        text="ok",
+        model="m",
+        provider=provider,
+        usage=LLMUsage(web_search_requests=web_search_requests),
+        raw_request={},
+        raw_response=None,
+        searches=list(searches),
+        citations=list(citations),
+    )
+
+
+def test_force_first_unsupported_falls_back_to_unforced_retry(patched):
+    good = _grounded(
+        provider="openrouter",
+        citations=[{"url": "https://x", "title": "maga rally", "snippet": None}],
+        web_search_requests=3,
+    )
+    client = _FakeLLMClient(
+        ModelSpec("openrouter", "moonshotai/kimi-k2.6"),
+        [LLMConfigError("force_first not supported on openrouter"), good],
+    )
+
+    result, n_searches = claude._invoke_and_record(
+        client, {}, "sys", "user", "2026-07-06", "am", force_search=True,
+    )
+
+    assert result is good
+    # First attempt forced, retry unforced — not silently skipped.
+    assert client.force_first_calls == [True, False]
+    # Provider-agnostic count comes from usage.web_search_requests since
+    # searches (per-query telemetry) is empty on this transport.
+    assert n_searches == 3
+
+
+def test_llmconfigerror_propagates_when_not_forcing(patched):
+    client = _FakeLLMClient(
+        ModelSpec("openrouter", "moonshotai/kimi-k2.6"),
+        [LLMConfigError("some unrelated config problem")],
+    )
+    with pytest.raises(LLMConfigError):
+        claude._invoke_and_record(
+            client, {}, "sys", "user", "2026-07-06", "am", force_search=False,
+        )
+
+
+def test_n_searches_uses_max_of_recorded_and_usage_on_anthropic(patched):
+    # Anthropic populates BOTH result.searches and usage.web_search_requests;
+    # when usage under-reports (or is absent, as in duck-typed test fakes
+    # elsewhere in this suite) the per-query count still wins.
+    result = _grounded(
+        provider="anthropic",
+        searches=[{"query": "q", "urls": [], "result_count": 0, "error": None}],
+        web_search_requests=0,
+    )
+    client = _FakeLLMClient(ModelSpec("anthropic", "claude-haiku-4-5"), [result])
+
+    _, n_searches = claude._invoke_and_record(
+        client, {}, "sys", "user", "2026-07-06", "am",
+    )
+
+    assert n_searches == 1
+    assert client.force_first_calls == [False]
+
+
+def test_n_searches_falls_back_to_usage_when_searches_empty(patched):
+    # OpenRouter shape: searches always empty, usage carries the real count.
+    result = _grounded(provider="openrouter", searches=[], web_search_requests=5)
+    client = _FakeLLMClient(ModelSpec("openrouter", "moonshotai/kimi-k2.6"), [result])
+
+    _, n_searches = claude._invoke_and_record(
+        client, {}, "sys", "user", "2026-07-06", "am",
+    )
+
+    assert n_searches == 5

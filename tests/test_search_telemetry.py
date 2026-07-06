@@ -344,3 +344,59 @@ def test_script_match_is_case_insensitive():
     searches = _searches("Trump Truth Social")
     topics = [{"name": "Trump", "keywords": ["trump"]}]
     assert unmet_required_topics(searches, topics, script="...TRUMP posted...") == []
+
+
+# ── citations fallback (config#1659 Phase B: query-less transports) ─────────
+
+
+def test_empty_searches_with_no_citations_is_unmet():
+    # Neither queries nor citations available — genuinely ungrounded.
+    topics = [{"name": "Political pulse", "keywords": ["maga"]}]
+    assert unmet_required_topics([], topics, citations=[]) == ["Political pulse"]
+
+
+def test_citation_title_satisfies_topic_when_no_queries_exposed():
+    # OpenRouter shape: searches is always [] (no query telemetry at all —
+    # krepis.llm_search), but citations carry title/snippet/url.
+    citations = [{"url": "https://x.com/a", "title": "MAGA reacts to the bill", "snippet": None}]
+    topics = [{"name": "Political pulse", "keywords": ["maga"]}]
+    assert unmet_required_topics([], topics, citations=citations) == []
+
+
+def test_citation_snippet_satisfies_topic():
+    citations = [{"url": "https://x.com/a", "title": "Markets today", "snippet": "Truth Social post drove volume"}]
+    topics = [{"name": "Political pulse", "keywords": ["truth social"]}]
+    assert unmet_required_topics([], topics, citations=citations) == []
+
+
+def test_citation_url_satisfies_topic():
+    citations = [{"url": "https://example.com/maga-rally-recap", "title": None, "snippet": None}]
+    topics = [{"name": "Political pulse", "keywords": ["maga"]}]
+    assert unmet_required_topics([], topics, citations=citations) == []
+
+
+def test_citation_fallback_still_requires_aired_when_script_given():
+    # Same blind-spot rule applies on the citation-fallback path: cited but
+    # never actually written into the script is still unmet.
+    citations = [{"url": "https://x.com/a", "title": "MAGA reacts", "snippet": None}]
+    topics = [{"name": "Political pulse", "keywords": ["maga"]}]
+    script = "Welcome to Morning Signal. Markets mixed today. Seattle weather."
+    assert unmet_required_topics(
+        [], topics, script=script, citations=citations,
+    ) == ["Political pulse"]
+
+
+def test_queries_take_priority_over_citations_when_both_present():
+    # Anthropic populates both searches AND citations for the same call —
+    # queries stay the primary/richer signal (zero behavior change for the
+    # existing Anthropic-transport contract); a citation that would satisfy
+    # the topic must not paper over queries that don't.
+    searches = _searches("spy futures only")
+    citations = [{"url": "https://x.com/a", "title": "maga rally", "snippet": None}]
+    topics = [{"name": "Political pulse", "keywords": ["maga"]}]
+    assert unmet_required_topics(searches, topics, citations=citations) == ["Political pulse"]
+
+
+def test_citations_none_defaults_like_empty_list():
+    topics = [{"name": "Political pulse", "keywords": ["maga"]}]
+    assert unmet_required_topics([], topics, citations=None) == ["Political pulse"]
