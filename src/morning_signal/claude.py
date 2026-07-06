@@ -19,11 +19,12 @@ closes-when criteria — this module change is the prerequisite, not the flip.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from krepis.llm import LLMClient, SearchOptions
 from krepis.llm_capture import capture_llm_call
@@ -54,6 +55,20 @@ log = logging.getLogger("morning-signal")
 LLM_ENV_VAR = "MORNING_SIGNAL_LLM"
 
 
+def _anthropic_default_spec(config: dict) -> ModelSpec:
+    """The anthropic-transport spec used both as :func:`resolve_llm_spec`'s
+    legacy default AND as :func:`generate_script`'s unconditional fallback
+    when a non-anthropic primary spec fails to produce usable content
+    (config#1659 Phase B: default to an OSS primary, fall back to this
+    known-reliable spec on exhaustion rather than aborting outright).
+    """
+    return ModelSpec(
+        "anthropic",
+        config.get("claude_model", "claude-sonnet-4-6"),
+        max_tokens=config.get("max_tokens", 4096),
+    )
+
+
 def resolve_llm_spec(config: dict) -> ModelSpec:
     """The active ModelSpec: env override → config ``llm`` → legacy default.
 
@@ -66,11 +81,7 @@ def resolve_llm_spec(config: dict) -> ModelSpec:
     configured = config.get("llm")
     if configured:
         return parse_model_spec(str(configured), source="config 'llm'")
-    return ModelSpec(
-        "anthropic",
-        config.get("claude_model", "claude-sonnet-4-6"),
-        max_tokens=config.get("max_tokens", 4096),
-    )
+    return _anthropic_default_spec(config)
 
 EDITION_LABELS = {"am": "MORNING", "pm": "EVENING"}
 
@@ -412,52 +423,32 @@ def build_episode_request(
     }
 
 
-def generate_script(
+def _attempt_episode(
+    llm_client: LLMClient,
     config: dict,
+    prompt_text: str,
+    user_content: str,
     date_str: str,
     edition: str,
-    schedule_entry: dict | None | object = _LOAD_SCHEDULE,
-) -> str:
-    """Call Claude with web search to generate the podcast script.
+    required_topics: list[dict],
+    effective_edition: str,
+    edition_label: str,
+    friendly_date: str,
+) -> tuple[str, dict]:
+    """Run one full generation attempt (first pass + optional self-heal
+    recovery) against ``llm_client``'s spec. Returns ``(script, outcome)``
+    where ``outcome`` is a small JSON-safe dict (provider/model/n_searches/
+    unmet_topics/script_chars) for the LLM-decision log.
 
-    ``schedule_entry``: the normalized per-date schedule entry from
-    ``schedule_override.load_schedule_override``. ``episode.main`` loads
-    the manifest once (for its skip guard) and passes the result through
-    here; direct callers can omit it (the default sentinel loads it from
-    config/S3, preserving the original call contract) or pass ``None``
-    to explicitly run regular programming. ``skip`` entries never reach
-    this function via the orchestrator; a self-loaded skip entry is
-    treated as regular programming (the skip decision belongs to
-    ``episode.main``, not here).
-
-    Payload shape:
-      - ``system``: static production prompt with ephemeral
-        ``cache_control`` so the ~1.3K-token prefix hits the 0.1×
-        cache-read rate on every tool-loop re-read inside one call.
-      - ``messages[0]``: dynamic user preamble (date + edition + the
-        opener instruction). The opener instruction lives in the user
-        message, NOT the system block, so the static prefix stays
-        cacheable per-call.
-      - Post-process: if the response doesn't begin with the canonical
-        opener, prepend it. Belt-and-suspenders for the case where the
-        model emits a "Great, I now have enough info..." preamble.
-
-    ``max_uses`` on ``web_search`` caps server-tool fees in the runaway
-    case; 20 is above the empirical typical (~15).
+    Raises :exc:`RuntimeError` for the two HARD-abort policies —
+    ``min_web_searches`` floor and ``required_search_topics_fatal`` — same
+    as always. :func:`generate_script` decides what a raise (or an empty-
+    but-non-raising return) means: for a provider with no fallback
+    configured, it propagates exactly as before; for a primary spec that
+    HAS a fallback (config#1659: default to an OSS model, fall back to
+    Anthropic on exhaustion), it triggers a second attempt on the fallback
+    spec instead.
     """
-    llm_client = LLMClient(resolve_llm_spec(config), max_retries=5)
-    req = build_episode_request(config, date_str, edition, schedule_entry)
-    prompt_text = req["prompt_text"]
-    user_content = req["user_content"]
-    opener = req["opener"]
-    edition_label = req["edition_label"]
-    effective_edition = req["effective_edition"]
-    required_topics = req["required_topics"]
-    schedule_entry = req["schedule_entry"]
-
-    friendly_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %B %-d, %Y")
-    log.info(f"Generating {edition_label} script for {friendly_date}...")
-
     result, n_searches = _invoke_and_record(
         llm_client, config, prompt_text, user_content, date_str, edition
     )
@@ -475,12 +466,13 @@ def generate_script(
     if n_searches < min_web_searches:
         log.error(
             f"ABORT: {edition_label} edition for {friendly_date} ran only "
-            f"{n_searches} web search(es) (floor is {min_web_searches}). "
-            f"A zero/low-search edition is almost certainly hallucinated "
-            f"rather than grounded in live news — refusing to publish. "
-            f"Check the web_search tool, the model, and any pre-fetched "
-            f"news-context framing. To intentionally allow this, set "
-            f"min_web_searches in config."
+            f"{n_searches} web search(es) (floor is {min_web_searches}) on "
+            f"provider={llm_client.spec.provider!r} model="
+            f"{llm_client.spec.model!r}. A zero/low-search edition is "
+            f"almost certainly hallucinated rather than grounded in live "
+            f"news — refusing to publish. Check the web_search tool, the "
+            f"model, and any pre-fetched news-context framing. To "
+            f"intentionally allow this, set min_web_searches in config."
         )
         raise RuntimeError(
             f"web_search floor not met: {n_searches} < {min_web_searches} "
@@ -529,9 +521,7 @@ def generate_script(
     # global ``min_web_searches`` floor above stays HARD regardless — a
     # near-zero-search edition is hallucinated wholesale, a different and
     # unrecoverable failure.
-    # (required_topics + effective_edition were computed in
-    # build_episode_request above — see its docstring/comment for the
-    # override-mode + editions-scoping rationale.)
+    unmet: list[str] = []
     if required_topics:
         fatal = config.get("required_search_topics_fatal", False)
         recover = config.get("required_search_topics_recover", True)
@@ -620,7 +610,180 @@ def generate_script(
                 unmet, n_searches, budget,
             )
 
-    script = result.text
+    outcome = {
+        "provider": result.provider,
+        "model": result.model,
+        "n_searches": n_searches,
+        "unmet_topics": unmet,
+        "script_chars": len(result.text),
+    }
+    return result.text, outcome
+
+
+def _record_llm_decision(
+    config: dict,
+    date_str: str,
+    edition: str,
+    primary_spec: ModelSpec,
+    used_spec: ModelSpec,
+    fell_back: bool,
+    primary_outcome: dict | None,
+    fallback_outcome: dict | None,
+) -> None:
+    """Record which model actually produced (or failed to produce) the
+    aired script — the operator-visible answer to "what LLM generated
+    today's episode", independent of the granular per-call cost/search
+    telemetry sinks :func:`_invoke_and_record` already writes.
+
+    One JSON file per (date, edition), mirroring the existing
+    ``{date}-{edition}.cost.jsonl``/``.searches.jsonl`` naming convention.
+    Best-effort: a write failure is logged but never blocks publish, same
+    policy as :func:`_alert_degraded_coverage` and ``record_applied``.
+    """
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "date": date_str,
+        "edition": edition,
+        "primary_provider": primary_spec.provider,
+        "primary_model": primary_spec.model,
+        "used_provider": used_spec.provider,
+        "used_model": used_spec.model,
+        "fell_back": fell_back,
+        "primary_outcome": primary_outcome,
+        "fallback_outcome": fallback_outcome,
+    }
+    path = _config.EPISODES_DIR / f"{date_str}-{edition}.llm_decision.json"
+    try:
+        _config.EPISODES_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, indent=2))
+        log.info(
+            f"LLM decision: {used_spec.provider}:{used_spec.model} "
+            f"(fell_back={fell_back}) -> {path.name}"
+        )
+    except Exception:  # noqa: BLE001 — never block publish over a log write
+        log.warning(
+            "Failed to write LLM decision log (non-fatal)", exc_info=True
+        )
+
+
+def generate_script(
+    config: dict,
+    date_str: str,
+    edition: str,
+    schedule_entry: dict | None | object = _LOAD_SCHEDULE,
+) -> str:
+    """Call Claude with web search to generate the podcast script.
+
+    ``schedule_entry``: the normalized per-date schedule entry from
+    ``schedule_override.load_schedule_override``. ``episode.main`` loads
+    the manifest once (for its skip guard) and passes the result through
+    here; direct callers can omit it (the default sentinel loads it from
+    config/S3, preserving the original call contract) or pass ``None``
+    to explicitly run regular programming. ``skip`` entries never reach
+    this function via the orchestrator; a self-loaded skip entry is
+    treated as regular programming (the skip decision belongs to
+    ``episode.main``, not here).
+
+    Payload shape:
+      - ``system``: static production prompt with ephemeral
+        ``cache_control`` so the ~1.3K-token prefix hits the 0.1×
+        cache-read rate on every tool-loop re-read inside one call.
+      - ``messages[0]``: dynamic user preamble (date + edition + the
+        opener instruction). The opener instruction lives in the user
+        message, NOT the system block, so the static prefix stays
+        cacheable per-call.
+      - Post-process: if the response doesn't begin with the canonical
+        opener, prepend it. Belt-and-suspenders for the case where the
+        model emits a "Great, I now have enough info..." preamble.
+
+    ``max_uses`` on ``web_search`` caps server-tool fees in the runaway
+    case; 20 is above the empirical typical (~15).
+
+    Provider fallback (config#1659): the ``llm`` config knob can point at
+    a non-Anthropic primary (e.g. an OpenRouter open-weight model). If
+    that primary's OWN attempt hard-fails (``min_web_searches`` floor) or
+    silently produces no usable content — a real, live-verified failure
+    mode for reasoning-capable OpenRouter models, 2026-07-06 — this falls
+    through to ONE fresh attempt on :func:`_anthropic_default_spec` (the
+    known-reliable default) rather than aborting the episode outright.
+    Skipped when ``MORNING_SIGNAL_LLM`` pins an exact spec (the escape
+    hatch means "run exactly this," not "with a hidden fallback"), and
+    skipped when the primary IS ALREADY the anthropic spec (falling back
+    to the same model fixes nothing and doubles cost). A fallback
+    attempt's own hard-abort propagates unchanged — there is nowhere
+    further to fall back to. Either way, :func:`_record_llm_decision`
+    logs which model actually produced (or failed to produce) the script.
+    """
+    primary_spec = resolve_llm_spec(config)
+    req = build_episode_request(config, date_str, edition, schedule_entry)
+    prompt_text = req["prompt_text"]
+    user_content = req["user_content"]
+    opener = req["opener"]
+    edition_label = req["edition_label"]
+    effective_edition = req["effective_edition"]
+    required_topics = req["required_topics"]
+    schedule_entry = req["schedule_entry"]
+
+    friendly_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %B %-d, %Y")
+    log.info(f"Generating {edition_label} script for {friendly_date}...")
+
+    fallback_eligible = (
+        primary_spec.provider != "anthropic"
+        and not os.environ.get(LLM_ENV_VAR)
+    )
+
+    primary_client = LLMClient(primary_spec, max_retries=5)
+    primary_failed_exc: Exception | None = None
+    try:
+        script, outcome = _attempt_episode(
+            primary_client, config, prompt_text, user_content, date_str,
+            edition, required_topics, effective_edition, edition_label,
+            friendly_date,
+        )
+    except RuntimeError as exc:
+        script, outcome = "", None
+        primary_failed_exc = exc
+
+    used_spec = primary_spec
+    fell_back = False
+    fallback_outcome = None
+
+    if not script and fallback_eligible:
+        if primary_failed_exc is not None:
+            log.error(
+                f"{edition_label} edition for {friendly_date}: primary "
+                f"provider={primary_spec.provider!r} model="
+                f"{primary_spec.model!r} aborted ({primary_failed_exc}) — "
+                f"falling back to the Anthropic default."
+            )
+        else:
+            log.error(
+                f"{edition_label} edition for {friendly_date}: primary "
+                f"provider={primary_spec.provider!r} model="
+                f"{primary_spec.model!r} produced no usable content after "
+                f"its own retries — falling back to the Anthropic default."
+            )
+        fallback_spec = _anthropic_default_spec(config)
+        fallback_client = LLMClient(fallback_spec, max_retries=5)
+        # A fallback failure is NOT caught here — it propagates exactly like
+        # a primary failure would on an anthropic-only config, since there
+        # is nowhere further to fall back to.
+        script, fallback_outcome = _attempt_episode(
+            fallback_client, config, prompt_text, user_content, date_str,
+            edition, required_topics, effective_edition, edition_label,
+            friendly_date,
+        )
+        used_spec = fallback_spec
+        fell_back = True
+    elif not script and primary_failed_exc is not None:
+        # Not fallback-eligible (anthropic-only config, or MORNING_SIGNAL_LLM
+        # pinned) — preserve the original hard-abort behavior exactly.
+        raise primary_failed_exc
+
+    _record_llm_decision(
+        config, date_str, edition, primary_spec, used_spec, fell_back,
+        outcome, fallback_outcome,
+    )
 
     if not script:
         log.error("Model returned no text content.")
