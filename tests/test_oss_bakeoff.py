@@ -22,6 +22,18 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 
+class _FakeS3:
+    """No-op S3 client stand-in — records upload_file calls, never touches
+    the network. The default for every test unless a test overrides
+    bakeoff_module._aws_client itself to exercise sync success/failure."""
+
+    def __init__(self):
+        self.uploads = []
+
+    def upload_file(self, local_path, bucket, key, **kw):
+        self.uploads.append((local_path, bucket, key, kw))
+
+
 @pytest.fixture
 def bakeoff_module(monkeypatch, tmp_path: Path):
     """Reload ``oss_bakeoff`` with config/prompt/env wired to tmp paths —
@@ -54,7 +66,11 @@ def bakeoff_module(monkeypatch, tmp_path: Path):
 
     if "oss_bakeoff" in sys.modules:
         del sys.modules["oss_bakeoff"]
-    return importlib.import_module("oss_bakeoff")
+    module = importlib.import_module("oss_bakeoff")
+    # Never let a test hit real AWS for the S3 sync — default to a no-op
+    # fake unless a test explicitly wants to inspect/break the sync.
+    monkeypatch.setattr(module, "_aws_client", lambda *a, **kw: _FakeS3())
+    return module
 
 
 def _grounded(*, provider, model, unmet_hit, web_search_requests):
@@ -206,3 +222,65 @@ def test_main_appends_on_repeated_runs(bakeoff_module, monkeypatch, tmp_path):
 
     out_path = log_dir / "2026-07-06-am.bakeoff.jsonl"
     assert len(out_path.read_text().strip().splitlines()) == 2
+
+
+# ── S3 sync (durability across box replacement, 2026-07-06) ─────────────────
+
+
+def test_main_syncs_to_s3_ops_bakeoff_prefix(bakeoff_module, monkeypatch, tmp_path):
+    monkeypatch.setattr(bakeoff_module, "LLMClient", _dispatcher(_all_pass_plan()))
+    fake_s3 = _FakeS3()
+    monkeypatch.setattr(bakeoff_module, "_aws_client", lambda *a, **kw: fake_s3)
+    log_dir = tmp_path / "bakeoff_out"
+    monkeypatch.setenv(bakeoff_module.BAKEOFF_LOG_DIR_ENV, str(log_dir))
+    monkeypatch.setattr(sys, "argv", ["oss_bakeoff.py", "--date", "2026-07-06", "--edition", "am"])
+
+    assert bakeoff_module.main() == 0
+
+    assert len(fake_s3.uploads) == 1
+    local_path, bucket, key, kw = fake_s3.uploads[0]
+    assert bucket == "test-bucket"
+    assert key == "ops/bakeoff/2026-07-06-am.bakeoff.jsonl"
+    assert str(local_path).endswith("2026-07-06-am.bakeoff.jsonl")
+
+
+def test_sync_failure_does_not_crash_the_run(bakeoff_module, monkeypatch, tmp_path):
+    """S3 sync is secondary to the local write — a failure there must not
+    take down the whole bakeoff run."""
+    class _BrokenS3:
+        def upload_file(self, *a, **kw):
+            raise RuntimeError("simulated S3 outage")
+
+    monkeypatch.setattr(bakeoff_module, "LLMClient", _dispatcher(_all_pass_plan()))
+    monkeypatch.setattr(bakeoff_module, "_aws_client", lambda *a, **kw: _BrokenS3())
+    log_dir = tmp_path / "bakeoff_out"
+    monkeypatch.setenv(bakeoff_module.BAKEOFF_LOG_DIR_ENV, str(log_dir))
+    monkeypatch.setattr(sys, "argv", ["oss_bakeoff.py", "--date", "2026-07-06", "--edition", "am"])
+
+    assert bakeoff_module.main() == 0
+
+    out_path = log_dir / "2026-07-06-am.bakeoff.jsonl"
+    assert out_path.exists()  # local copy still intact despite the S3 failure
+
+
+def test_sync_skipped_with_warning_when_no_s3_bucket_configured(
+    bakeoff_module, monkeypatch, tmp_path, caplog
+):
+    import logging
+
+    fake_s3 = _FakeS3()
+    monkeypatch.setattr(bakeoff_module, "_aws_client", lambda *a, **kw: fake_s3)
+    from morning_signal.config import load_config
+    config = load_config()
+    config.pop("s3_bucket", None)
+
+    log_dir = tmp_path / "bakeoff_out"
+    out_path = log_dir / "2026-07-06-am.bakeoff.jsonl"
+    log_dir.mkdir(parents=True)
+    out_path.write_text("{}\n")
+
+    with caplog.at_level(logging.WARNING):
+        bakeoff_module._sync_to_s3(config, out_path, "2026-07-06", "am")
+
+    assert fake_s3.uploads == []
+    assert any("no s3_bucket" in r.message for r in caplog.records)
