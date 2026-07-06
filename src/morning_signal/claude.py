@@ -32,6 +32,7 @@ from krepis.llm_config import LLMConfigError, ModelSpec, parse_model_spec
 from krepis.trading_calendar import is_trading_day
 
 from morning_signal import config as _config
+from morning_signal.aws import _aws_client
 from morning_signal.config import load_prompt
 from morning_signal.cost_telemetry import record_result_cost
 from morning_signal.news_context import load_news_context
@@ -53,6 +54,14 @@ log = logging.getLogger("morning-signal")
 # which in production IS the /morning-signal/config-yaml SSM parameter, so a
 # provider flip is an SSM edit picked up by the next cron firing, no redeploy.
 LLM_ENV_VAR = "MORNING_SIGNAL_LLM"
+
+# S3 mirror of the per-episode LLM decision log (see _record_llm_decision) —
+# lets the console's Morning Signal Schedule page (crucible-dashboard) show
+# which model aired each day without needing box access. Private: NOT under
+# the public episodes/*|feed.xml|artwork.jpg prefixes the bucket policy
+# allows anonymous reads on (2026-07-06 bucket-policy scoping) — readable
+# only via the dashboard's own IAM grant on this exact prefix.
+LLM_DECISION_S3_PREFIX = "ops/llm_decisions/"
 
 
 def _anthropic_default_spec(config: dict) -> ModelSpec:
@@ -639,6 +648,11 @@ def _record_llm_decision(
     ``{date}-{edition}.cost.jsonl``/``.searches.jsonl`` naming convention.
     Best-effort: a write failure is logged but never blocks publish, same
     policy as :func:`_alert_degraded_coverage` and ``record_applied``.
+
+    Also best-effort synced to S3 (``LLM_DECISION_S3_PREFIX``) so the
+    console's Morning Signal Schedule page can show which model aired each
+    day without needing box access — same non-fatal policy as the local
+    write; a sync failure never blocks publish or masks the local copy.
     """
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -652,10 +666,13 @@ def _record_llm_decision(
         "primary_outcome": primary_outcome,
         "fallback_outcome": fallback_outcome,
     }
-    path = _config.EPISODES_DIR / f"{date_str}-{edition}.llm_decision.json"
+    filename = f"{date_str}-{edition}.llm_decision.json"
+    body = json.dumps(record, indent=2)
+
+    path = _config.EPISODES_DIR / filename
     try:
         _config.EPISODES_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(record, indent=2))
+        path.write_text(body)
         log.info(
             f"LLM decision: {used_spec.provider}:{used_spec.model} "
             f"(fell_back={fell_back}) -> {path.name}"
@@ -663,6 +680,26 @@ def _record_llm_decision(
     except Exception:  # noqa: BLE001 — never block publish over a log write
         log.warning(
             "Failed to write LLM decision log (non-fatal)", exc_info=True
+        )
+
+    bucket = config.get("s3_bucket")
+    if not bucket:
+        return
+    try:
+        s3 = _aws_client("s3", region_name=config.get("s3_region", "us-west-2"))
+        s3.put_object(
+            Bucket=bucket,
+            Key=f"{LLM_DECISION_S3_PREFIX}{filename}",
+            Body=body.encode("utf-8"),
+            ContentType="application/json",
+        )
+        log.info(
+            f"LLM decision synced to s3://{bucket}/{LLM_DECISION_S3_PREFIX}{filename}"
+        )
+    except Exception:  # noqa: BLE001 — never block publish over a sync failure
+        log.warning(
+            "Failed to sync LLM decision log to S3 (non-fatal, local copy "
+            "still intact)", exc_info=True,
         )
 
 

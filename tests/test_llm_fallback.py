@@ -212,3 +212,82 @@ def test_decision_log_written_on_ordinary_success_no_fallback(monkeypatch, tmp_p
     assert decision["primary_provider"] == "openrouter"
     assert decision["used_provider"] == "openrouter"
     assert decision["fell_back"] is False
+
+
+# ── S3 sync of the decision log (console visibility, 2026-07-06) ────────────
+
+
+class _FakeS3:
+    """No-op S3 client stand-in — records put_object calls, never touches
+    the network (mirrors scripts/oss_bakeoff.py's test fake)."""
+
+    def __init__(self):
+        self.puts = []
+
+    def put_object(self, **kw):
+        self.puts.append(kw)
+
+
+def test_decision_log_synced_to_s3_when_bucket_configured(monkeypatch, tmp_path):
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+    fake_s3 = _FakeS3()
+    monkeypatch.setattr(claude, "_aws_client", lambda *a, **kw: fake_s3)
+    plan = {
+        "openrouter": [
+            _grounded(provider="openrouter", model="moonshotai/kimi-k2.6",
+                      text="Welcome to Morning Signal. All good.", n_searches=8),
+        ],
+    }
+    monkeypatch.setattr(claude, "LLMClient", _client_factory(plan))
+
+    claude.generate_script(_base_config(s3_bucket="test-bucket"), "2026-07-06", "am")
+
+    assert len(fake_s3.puts) == 1
+    put = fake_s3.puts[0]
+    assert put["Bucket"] == "test-bucket"
+    assert put["Key"] == "ops/llm_decisions/2026-07-06-am.llm_decision.json"
+    synced = json.loads(put["Body"])
+    assert synced["used_provider"] == "openrouter"
+
+
+def test_decision_log_sync_skipped_without_s3_bucket_configured(monkeypatch, tmp_path):
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+    fake_s3 = _FakeS3()
+    monkeypatch.setattr(claude, "_aws_client", lambda *a, **kw: fake_s3)
+    config = _base_config()
+    config.pop("s3_bucket", None)
+    plan = {
+        "openrouter": [
+            _grounded(provider="openrouter", model="moonshotai/kimi-k2.6",
+                      text="Welcome to Morning Signal. All good.", n_searches=8),
+        ],
+    }
+    monkeypatch.setattr(claude, "LLMClient", _client_factory(plan))
+
+    claude.generate_script(config, "2026-07-06", "am")
+
+    assert fake_s3.puts == []
+    # Local copy is unaffected regardless.
+    assert _decision_path(tmp_path).exists()
+
+
+def test_decision_log_sync_failure_does_not_block_publish(monkeypatch, tmp_path):
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+
+    class _BrokenS3:
+        def put_object(self, **kw):
+            raise RuntimeError("simulated S3 outage")
+
+    monkeypatch.setattr(claude, "_aws_client", lambda *a, **kw: _BrokenS3())
+    plan = {
+        "openrouter": [
+            _grounded(provider="openrouter", model="moonshotai/kimi-k2.6",
+                      text="Welcome to Morning Signal. All good.", n_searches=8),
+        ],
+    }
+    monkeypatch.setattr(claude, "LLMClient", _client_factory(plan))
+
+    script = claude.generate_script(_base_config(s3_bucket="test-bucket"), "2026-07-06", "am")
+
+    assert "All good" in script
+    assert _decision_path(tmp_path).exists()
