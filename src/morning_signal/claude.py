@@ -451,7 +451,6 @@ def generate_script(
     user_content = req["user_content"]
     opener = req["opener"]
     edition_label = req["edition_label"]
-    weekend = req["weekend"]
     effective_edition = req["effective_edition"]
     required_topics = req["required_topics"]
     schedule_entry = req["schedule_entry"]
