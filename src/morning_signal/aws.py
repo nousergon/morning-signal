@@ -169,6 +169,17 @@ def _maybe_load_from_ssm() -> None:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         os.environ["ANTHROPIC_API_KEY"] = fetch("/morning-signal/anthropic-api-key")
 
+    # OpenRouter key for the Phase-B open-weight generation path
+    # (llm: "openrouter:moonshotai/kimi-k2.6"). Optional — the param need not
+    # exist until the flip; a pre-flip box (still on the Anthropic transport)
+    # runs fine without it. Local env-var override wins. Mirrors the
+    # anthropic-api-key pattern above; hydrating it now lets the shadow bakeoff
+    # run alongside the aired Anthropic edition before the SSM ``llm:`` flip.
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        openrouter_key = fetch_optional("/morning-signal/openrouter-api-key")
+        if openrouter_key:
+            os.environ["OPENROUTER_API_KEY"] = openrouter_key
+
     # Flow-doctor / Telegram creds. Local env-var overrides win (so
     # one-off local debugging stays cheap); SSM fills in otherwise.
     # Optional — installs with notifications.enabled=false don't need

@@ -105,7 +105,7 @@ def test_tts_polly_applies_speed_adjust(
 # ── generate_script (anthropic mocked) ───────────────────────────────────────
 
 
-def _make_anthropic_mock(text: str = "Generated script body."):
+def _make_anthropic_mock(text: str = "Generated script body.", web_searches: int = 0):
     """Build a fake anthropic.Anthropic client where messages.create returns
     a text block.
 
@@ -118,13 +118,28 @@ def _make_anthropic_mock(text: str = "Generated script body."):
     ``usage.cache_creation``, which auto-materialized as a MagicMock →
     ``TypeError`` in 16 tests). The real type is the ground truth; new SDK
     fields arrive with their real defaults instead of Mocks.
+
+    ``web_searches`` sets ``usage.server_tool_use.web_search_requests`` — the
+    real signal the min_web_searches floor keys on (via krepis
+    ``usage.web_search_requests``, transport-agnostic after config#1659). This
+    is the production-accurate way to simulate "N live searches happened",
+    replacing the old ``patch(record_search_events, return_value=N)`` fiction
+    (which layered a count on top of a mock that genuinely did zero searches).
     """
-    from anthropic.types import Usage
+    from anthropic.types import ServerToolUsage, Usage
 
     block = MagicMock()
     block.type = "text"
     block.text = text
-    usage = Usage(input_tokens=100, output_tokens=200)
+    usage = Usage(
+        input_tokens=100,
+        output_tokens=200,
+        server_tool_use=ServerToolUsage(
+            web_search_requests=web_searches, web_fetch_requests=0
+        )
+        if web_searches
+        else None,
+    )
     response = MagicMock()
     response.content = [block]
     response.model = "claude-sonnet-4-6"
@@ -464,10 +479,9 @@ def test_generate_script_passes_when_search_floor_met(fresh_ge_module, tmp_path)
     prompt_path = tmp_path / "p.md"
     prompt_path.write_text("prompt")
 
-    anth_mock, _ = _make_anthropic_mock("Grounded body.")
+    anth_mock, _ = _make_anthropic_mock("Grounded body.", web_searches=3)
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
-         patch.object(_config, "PROMPT_FILE", prompt_path), \
-         patch.object(_claude, "record_search_events", return_value=3):
+         patch.object(_config, "PROMPT_FILE", prompt_path):
         out = fresh_ge_module.generate_script(
             {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
         )
@@ -509,10 +523,9 @@ def test_generate_script_publishes_with_alert_when_required_topic_unmet(
 
     sent: list[tuple] = []
 
-    anth_mock, _ = _make_anthropic_mock("Mostly grounded body.")
+    anth_mock, _ = _make_anthropic_mock("Mostly grounded body.", web_searches=8)
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path), \
-         patch.object(_claude, "record_search_events", return_value=8), \
          patch.object(
              _claude, "unmet_required_topics",
              return_value=["MAGA Pulse", "Anti-MAGA / Heterodox-Right Pulse"],
@@ -557,10 +570,9 @@ def test_generate_script_required_topics_fatal_flag_restores_abort(
 
     sent: list[tuple] = []
 
-    anth_mock, _ = _make_anthropic_mock("body")
+    anth_mock, _ = _make_anthropic_mock("body", web_searches=8)
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path), \
-         patch.object(_claude, "record_search_events", return_value=8), \
          patch.object(_claude, "unmet_required_topics", return_value=["MAGA Pulse"]), \
          patch(
              "morning_signal.watchdog.send_alert",

@@ -117,25 +117,68 @@ def record_searches(
     )
 
 
+def grounded_search_count(result: Any) -> int:
+    """Transport-agnostic count of web searches a grounded call issued.
+
+    The ``min_web_searches`` floor (2026-06-16 hallucination incident) needs a
+    single number that means "how many live web searches grounded this
+    edition" regardless of provider. The Anthropic transport exposes per-query
+    ``server_tool_use`` events (``result.searches``); the OpenRouter web-search
+    server tool does NOT — it exposes ``url_citation`` annotations plus a
+    billing counter ``usage.web_search_requests``. That counter is populated on
+    BOTH transports, so it is the canonical signal; we fall back to
+    ``len(result.searches)`` only when the counter is absent/zero (e.g. an
+    older Anthropic SDK path that didn't thread it), preserving the pre-Phase-B
+    behavior exactly. Returns 0 for a call that did no web search at all.
+    """
+    usage = getattr(result, "usage", None)
+    requests = int(getattr(usage, "web_search_requests", 0) or 0)
+    if requests > 0:
+        return requests
+    return len(getattr(result, "searches", None) or [])
+
+
+def _citation_texts(citations: list[dict[str, Any]] | None) -> list[str]:
+    """Lowercased ``url + title + snippet`` blob per citation, for keyword
+    matching. Empty list when ``citations`` is falsy (Anthropic path)."""
+    blobs: list[str] = []
+    for c in citations or []:
+        parts = [
+            str(c.get("url", "") or ""),
+            str(c.get("title", "") or ""),
+            str(c.get("snippet", "") or ""),
+        ]
+        blobs.append(" ".join(parts).lower())
+    return blobs
+
+
 def unmet_required_topics(
     searches: list[dict[str, Any]],
     required_topics: list[dict[str, Any]],
     edition: str | None = None,
     script: str | None = None,
+    citations: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Return the names of required search topics that were under-covered.
 
     A *required search topic* is a generic, config-driven assertion that the
-    model must have issued at least ``min_matches`` (default 1) ``web_search``
-    queries whose text contains any of the topic's ``keywords``. It exists to
-    catch the failure mode where a global search floor is met but a *specific*
-    segment — typically one with no pre-fetched-digest fallback — is silently
-    skipped and written from training memory instead of live news.
+    model must have issued at least ``min_matches`` (default 1) web searches
+    that targeted the topic's ``keywords``. It exists to catch the failure
+    mode where a global search floor is met but a *specific* segment —
+    typically one with no pre-fetched-digest fallback — is silently skipped
+    and written from training memory instead of live news.
 
     A topic is *covered* only when BOTH hold:
 
-    1. **Searched** — at least ``min_matches`` web-search queries contain one
-       of the topic's keywords (the segment was grounded in live news).
+    1. **Searched** — at least ``min_matches`` web searches targeted one of the
+       topic's keywords. On the Anthropic transport a "search" is a per-query
+       ``web_search`` event whose *query text* contains a keyword. The
+       OpenRouter web-search server tool does not expose query text, only
+       ``url_citation`` annotations — so when ``citations`` is supplied a
+       keyword hit against a citation's ``url``/``title``/``snippet`` ALSO
+       counts as a targeted search. The two sources are additive, so the same
+       function works byte-identically on Anthropic (``citations`` empty) and
+       on OpenRouter (``searches`` empty).
     2. **Aired** — when ``script`` is provided, at least one keyword also
        appears in the final spoken script (the segment was actually written,
        not searched-then-dropped, and not merely satisfied by an unrelated
@@ -154,7 +197,7 @@ def unmet_required_topics(
     no-op): which segments are search-critical is the operator's editorial
     choice, declared in their config alongside the prompt that defines those
     segments. Matching is case-insensitive substring containment over the
-    query string.
+    query string (and, on OpenRouter, the citation url/title/snippet).
 
     Each ``required_topics`` entry is a dict::
 
@@ -181,6 +224,7 @@ def unmet_required_topics(
     absent from the spoken script (empty list = every required topic covered).
     """
     queries = [str(s.get("query", "")).lower() for s in searches]
+    citation_blobs = _citation_texts(citations)
     script_lc = script.lower() if isinstance(script, str) else None
     edition_lc = edition.lower() if isinstance(edition, str) else None
     unmet: list[str] = []
@@ -193,8 +237,13 @@ def unmet_required_topics(
             continue
         name = str(topic.get("name") or ", ".join(keywords))
         min_matches = max(1, int(topic.get("min_matches", 1)))
+        # A targeted search = a query text (Anthropic) OR a citation blob
+        # (OpenRouter) containing a keyword. Additive so a mixed/either
+        # transport is handled by one code path.
         matches = sum(
             1 for q in queries if any(kw in q for kw in keywords)
+        ) + sum(
+            1 for blob in citation_blobs if any(kw in blob for kw in keywords)
         )
         searched = matches >= min_matches
         aired = script_lc is None or any(kw in script_lc for kw in keywords)

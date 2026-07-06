@@ -34,6 +34,7 @@ from morning_signal.schedule_override import (
     record_applied,
 )
 from morning_signal.search_telemetry import (
+    grounded_search_count,
     record_search_events,
     unmet_required_topics,
 )
@@ -159,10 +160,19 @@ def _invoke_and_record(
     append to the episode's JSONL sinks on every call, so a recovery pass is
     captured as an additional billed call (accurate cost record), not hidden.
 
+    Returns ``(result, n_searches)`` where ``n_searches`` is the
+    transport-agnostic web-search count (``grounded_search_count`` — keys on
+    ``usage.web_search_requests``, present on both Anthropic and OpenRouter,
+    so the ``min_web_searches`` floor works after the Phase-B flip).
+
     ``force_search=True`` deterministically forces a ``web_search`` tool call
     (``SearchOptions.force_first`` → forced server-tool ``tool_choice`` on
     the anthropic transport) — used by the recovery pass rather than merely
     asking for a search in prose. Verified against the live API (2026-06-29).
+    The OpenRouter web-search server tool CANNOT be forced (``force_first``
+    raises ``LLMConfigError`` there by design), so callers must gate
+    ``force_search`` on the anthropic transport; on OpenRouter the recovery
+    pass relies on the prose directive + the citation-count floor instead.
 
     The krepis anthropic transport builds its payload through
     ``krepis.anthropic_payload`` — the server-tool ⊥ assistant-prefill
@@ -188,12 +198,17 @@ def _invoke_and_record(
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
-    n_searches = record_search_events(
+    # JSONL sink keeps the per-query events (Anthropic only; a no-op on
+    # OpenRouter, which exposes citations not queries).
+    record_search_events(
         searches=result.searches,
         date_str=date_str,
         edition=edition,
         episodes_dir=_config.EPISODES_DIR,
     )
+    # The floor-relevant count is transport-agnostic (usage.web_search_requests
+    # on both transports), NOT len(searches) — which is 0 on OpenRouter.
+    n_searches = grounded_search_count(result)
     capture_llm_call(
         result,
         producer="morning_signal",
@@ -286,7 +301,14 @@ def generate_script(
     ``max_uses`` on ``web_search`` caps server-tool fees in the runaway
     case; 20 is above the empirical typical (~15).
     """
-    llm_client = LLMClient(resolve_llm_spec(config), max_retries=5)
+    spec = resolve_llm_spec(config)
+    llm_client = LLMClient(spec, max_retries=5)
+    # The forced-search recovery pass is Anthropic-only: OpenRouter's
+    # web-search server tool cannot be forced via tool_choice (force_first
+    # raises there). On OpenRouter the recovery pass degrades to a prose
+    # directive (which already mandates dedicated searches) + the
+    # citation-count floor; see the recovery block below.
+    can_force_search = spec.provider == "anthropic"
     weekend = is_non_trading_day(date_str)
     prompt_text = load_prompt(weekend=weekend)
 
@@ -451,11 +473,14 @@ def generate_script(
         fatal = config.get("required_search_topics_fatal", False)
         recover = config.get("required_search_topics_recover", True)
         # GroundedResult.text is the post-final-tool text; .searches carries
-        # the per-query events — both extracted by krepis.llm_search (the
-        # lifted morning-signal logic), no response re-parsing needed.
+        # the per-query events (Anthropic) and .citations the url_citation
+        # annotations (OpenRouter) — both extracted by krepis.llm_search, no
+        # response re-parsing. Passing citations makes the coverage guard
+        # transport-agnostic across the Phase-B flip.
         unmet = unmet_required_topics(
             result.searches, required_topics,
             edition=effective_edition, script=result.text,
+            citations=result.citations,
         )
 
         if unmet and recover:
@@ -471,16 +496,19 @@ def generate_script(
             # than only asking for one in prose — the prose ask is the same
             # stochastic compliance that already failed on the first pass.
             # (SearchOptions.force_first → forced server-tool tool_choice;
-            # API-supported, verified live 2026-06-29. Anthropic-transport
-            # only — Phase B replaces this with a citation-count floor.)
+            # API-supported, verified live 2026-06-29.) OpenRouter cannot force
+            # its server tool, so there we fall back to the prose directive
+            # alone (still names + mandates each dropped segment's search) and
+            # lean on the citation-count floor — force_first would raise.
             try:
                 r2, n2 = _invoke_and_record(
                     llm_client, config, prompt_text, user_content + directive,
-                    date_str, edition, force_search=True,
+                    date_str, edition, force_search=can_force_search,
                 )
                 unmet2 = unmet_required_topics(
                     r2.searches, required_topics,
                     edition=effective_edition, script=r2.text,
+                    citations=r2.citations,
                 )
                 if len(unmet2) < len(unmet):
                     log.info(
