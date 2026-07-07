@@ -50,6 +50,7 @@ from krepis.anthropic_payload import (  # noqa: E402
     build_messages_payload,
     build_web_search_tool,
 )
+from morning_signal import aws as _aws  # noqa: E402
 from morning_signal import config as _config  # noqa: E402
 from morning_signal.aws import _maybe_load_from_ssm  # noqa: E402
 from morning_signal.claude import (  # noqa: E402
@@ -115,6 +116,14 @@ def _build_canary_payload(
 
 def main() -> int:
     try:
+        # Mirrors episode.py/cli.py's bootstrap order exactly: assume the
+        # runner role BEFORE touching SSM/S3. Missing this step silently
+        # falls back to the box's own EC2 instance-profile credentials,
+        # which have no S3 grant on morning-signal-podcast at all — masked
+        # for months by that bucket's public-read policy (fixed
+        # 2026-07-06, PR #104) until oss_bakeoff.py's own verification run
+        # surfaced the identical gap as an AccessDenied on prompts/prompt.md.
+        _aws._AWS_SESSION = _aws._load_runner_session()
         _maybe_load_from_ssm()
     except Exception as exc:
         log.error(

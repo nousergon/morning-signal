@@ -68,6 +68,42 @@ def test_canary_returns_1_when_api_key_missing(canary_module, monkeypatch):
     assert canary_module.main() == 1
 
 
+def test_canary_assumes_runner_role_before_ssm_bootstrap(canary_module, monkeypatch):
+    """2026-07-06 regression: main() used to call _maybe_load_from_ssm()
+    without first assuming the runner role, silently falling back to the
+    box's own EC2 instance-profile credentials — masked for months by
+    morning-signal-podcast's public-read bucket policy until that policy
+    was scoped down (PR #104) and this exact gap surfaced as a live
+    AccessDenied. episode.py/cli.py always assumed the role first; the
+    scripts must match that order.
+
+    Observes the session state INSIDE the faked SSM bootstrap, then raises
+    to short-circuit before any real API dispatch — canary's own
+    try/except turns that into a clean ``1``, so the assertion on what was
+    observed happens outside that except block, not inside it (an
+    AssertionError raised there would otherwise be silently swallowed and
+    misreported as an ordinary bootstrap failure).
+    """
+    from morning_signal import aws as _aws_mod
+
+    sentinel = object()
+    observed = []
+
+    monkeypatch.setattr(_aws_mod, "_load_runner_session", lambda: sentinel)
+    monkeypatch.setattr(_aws_mod, "_AWS_SESSION", None)
+
+    def fake_maybe_load_from_ssm():
+        observed.append(_aws_mod._AWS_SESSION)
+        raise RuntimeError("stop here — order already observed")
+
+    monkeypatch.setattr(canary_module, "_maybe_load_from_ssm", fake_maybe_load_from_ssm)
+
+    result = canary_module.main()
+
+    assert result == 1
+    assert observed == [sentinel]
+
+
 def test_canary_returns_1_on_invalid_edition(canary_module, monkeypatch):
     monkeypatch.setenv("MORNING_SIGNAL_CANARY_EDITION", "midnight")
     assert canary_module.main() == 1

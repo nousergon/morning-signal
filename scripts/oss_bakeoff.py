@@ -40,6 +40,14 @@ prod for ≥2 weeks straight (config#1659's closes-when criterion), the live
 ``llm`` flip can be scheduled with an operator confident the coverage
 guards hold on that candidate.
 
+Each run's JSONL record is written locally (``bakeoff_logs/`` by default)
+AND best-effort synced to ``s3://{config[s3_bucket]}/ops/bakeoff/`` for
+durability across a box replacement — that prefix is private (2026-07-06:
+the bucket's public-read policy was tightened from a bucket-wide wildcard
+to exactly ``episodes/*``/``feed.xml``/``artwork.jpg``, so anything else
+written here, including this prefix, is authenticated-only by the
+policy's own absence).
+
 Usage::
 
     python scripts/oss_bakeoff.py --date 2026-07-06 --edition am
@@ -67,7 +75,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from krepis.llm import LLMClient, SearchOptions  # noqa: E402
 from krepis.llm_config import ModelSpec  # noqa: E402
 
-from morning_signal.aws import _maybe_load_from_ssm  # noqa: E402
+from morning_signal import aws as _aws  # noqa: E402
+from morning_signal.aws import _aws_client, _maybe_load_from_ssm  # noqa: E402
 from morning_signal.claude import build_episode_request, resolve_llm_spec  # noqa: E402
 from morning_signal.config import load_config  # noqa: E402
 from morning_signal.search_telemetry import unmet_required_topics  # noqa: E402
@@ -94,6 +103,19 @@ CANDIDATES = [
 # data. Overridable for the systemd unit / local runs.
 BAKEOFF_LOG_DIR_ENV = "MORNING_SIGNAL_BAKEOFF_LOG_DIR"
 DEFAULT_BAKEOFF_LOG_DIR = "bakeoff_logs"
+
+# S3 durability: local box disk alone doesn't survive a box replacement
+# across the ≥2-week bakeoff window, so each run also uploads to the
+# product's OWN bucket (not the shared alpha-engine-research bucket — the
+# morning-signal-runner IAM role has no write grant there, only on its own
+# morning-signal-podcast bucket). This prefix is PRIVATE: the bucket's
+# public-read policy (2026-07-06 fix, was a bucket-wide wildcard that also
+# leaked the proprietary prompts/ + schedule/ prefixes) is scoped to
+# EXACTLY episodes/*, feed.xml, and artwork.jpg — ops/bakeoff/ isn't
+# listed, so it stays authenticated-only by the policy's own absence, not
+# by convention. Runner role already has bucket-wide PutObject, so no new
+# IAM grant is needed for this prefix.
+BAKEOFF_S3_PREFIX = "ops/bakeoff/"
 
 
 def _run_side(
@@ -209,6 +231,40 @@ def run_bakeoff(config: dict, date_str: str, edition: str) -> dict:
     }
 
 
+def _sync_to_s3(config: dict, local_path: Path, date_str: str, edition: str) -> None:
+    """Best-effort upload of the day's bakeoff JSONL to S3 for durability
+    across the ≥2-week window — local box disk alone doesn't survive a box
+    replacement. Secondary to the local write (which already succeeded by
+    the time this runs), so a failure here is logged loudly but never
+    crashes the run — the comparison result itself is unaffected.
+    """
+    bucket = config.get("s3_bucket")
+    if not bucket:
+        log.warning(
+            "bakeoff: no s3_bucket in config — skipping S3 sync for %s-%s "
+            "(local copy at %s is the only record).",
+            date_str, edition, local_path,
+        )
+        return
+    region = config.get("s3_region", "us-west-2")
+    s3_key = f"{BAKEOFF_S3_PREFIX}{local_path.name}"
+    try:
+        s3 = _aws_client("s3", region_name=region)
+        s3.upload_file(
+            str(local_path), bucket, s3_key,
+            ExtraArgs={"ContentType": "application/x-ndjson"},
+        )
+        log.info("bakeoff: synced to s3://%s/%s", bucket, s3_key)
+    except Exception:
+        log.warning(
+            "bakeoff: S3 sync FAILED for %s-%s — local copy at %s is still "
+            "intact, but this run's evidence is NOT yet durable past a box "
+            "replacement. Investigate (IAM grant on ops/bakeoff/*? "
+            "network?).",
+            date_str, edition, local_path, exc_info=True,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -227,6 +283,15 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        # Mirrors episode.py/cli.py's bootstrap order exactly: assume the
+        # runner role BEFORE touching SSM/S3. Missing this step silently
+        # falls back to the box's own EC2 instance-profile credentials
+        # (alpha-engine-dashboard-role), which have no S3 grant on
+        # morning-signal-podcast at all — masked for months by that
+        # bucket's public-read policy (fixed 2026-07-06, PR #104) until
+        # this exact script's own verification run surfaced it as an
+        # AccessDenied on prompts/prompt.md.
+        _aws._AWS_SESSION = _aws._load_runner_session()
         _maybe_load_from_ssm()
     except Exception as exc:
         log.error(
@@ -266,6 +331,8 @@ def main() -> int:
     out_path = log_dir / f"{date_str}-{args.edition}.bakeoff.jsonl"
     with out_path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
+
+    _sync_to_s3(config, out_path, date_str, args.edition)
 
     any_worse = False
     for label, candidate in record["candidates"].items():
