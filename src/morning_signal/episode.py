@@ -237,6 +237,32 @@ def main():
     _config.EPISODES_DIR.mkdir(parents=True, exist_ok=True)
     _config.SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Reconciliation check: `skip_dates:` and the console schedule manifest
+    # (schedule.enabled) are two independent skip mechanisms, and the former
+    # is checked first below — a stale skip_dates entry left over after
+    # switching to the console calendar silently no-ops the run before the
+    # manifest is ever read. Root-caused 2026-07-10: an operator had removed
+    # the equivalent console schedule-manifest entry but the SSM skip_dates
+    # list still held the old date, eating that day's episode with zero
+    # alert. Fire once per invocation; best-effort, never blocks the episode.
+    if (config.get("schedule") or {}).get("enabled") and _config.parse_skip_dates(config):
+        _msg = (
+            "config `skip_dates` is non-empty while the console schedule "
+            "manifest (schedule.enabled: true) is also active — if this "
+            "list is stale, it will silently no-op today's run before the "
+            "schedule manifest is ever checked."
+        )
+        log.warning(f"schedule: {_msg}")
+        try:
+            from morning_signal.watchdog import send_alert
+
+            send_alert(config, args.edition, f"⚠️ morning-signal: {_msg}")
+        except Exception:  # noqa: BLE001 — alerting must never block the episode
+            log.warning(
+                "schedule: stale skip_dates alert could not be sent",
+                exc_info=True,
+            )
+
     # Operator skip dates (config `skip_dates:`) suppress BOTH editions —
     # days the listener can't listen (travel, vacation). Clean no-op (exit 0,
     # no failure email); the watchdog honors the same list so the absent

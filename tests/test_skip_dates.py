@@ -148,3 +148,79 @@ def test_watchdog_still_checks_non_skip_date(_watchdog_env):
     # Non-skip date with no AWS backing → the check itself errors → exit != 0.
     result = CliRunner().invoke(app, ["watchdog", "--date", "2026-07-08"])
     assert result.exit_code != 0
+
+
+# ── stale skip_dates reconciliation warning ─────────────────────────────────
+#
+# Root cause of the 2026-07-10 incident: skip_dates and the console schedule
+# manifest are independent skip mechanisms, and skip_dates is checked first.
+# An operator who migrates to the console manifest but forgets to clear an
+# old skip_dates entry gets a silently-eaten episode. These tests lock in the
+# warning that now fires whenever both mechanisms are live at once.
+
+
+def test_warns_and_alerts_when_skip_dates_stale_alongside_schedule_manifest(
+    monkeypatch, tmp_path, caplog
+):
+    from morning_signal import episode as _episode
+    from morning_signal import watchdog as _watchdog
+
+    config = {
+        "skip_dates": [SKIP_DATE],
+        "schedule": {"enabled": True},
+        "s3_bucket": "unused",
+        "s3_region": REGION,
+    }
+    monkeypatch.setattr(_aws, "_load_runner_session", lambda: None)
+    monkeypatch.setattr(_aws, "_maybe_load_from_ssm", lambda: None)
+    monkeypatch.setattr(_config, "load_config", lambda: config)
+    monkeypatch.setattr(_config, "EPISODES_DIR", tmp_path / "episodes")
+    monkeypatch.setattr(_config, "SCRIPTS_DIR", tmp_path / "scripts")
+    monkeypatch.setattr(
+        _episode, "generate_script", lambda *a, **k: pytest.fail("must not run")
+    )
+
+    alerts: list[str] = []
+    monkeypatch.setattr(_watchdog, "send_alert", lambda c, e, m: alerts.append(m) or True)
+
+    monkeypatch.setattr(
+        sys, "argv", ["generate_episode.py", "--date", SKIP_DATE, "--edition", "am"]
+    )
+    with caplog.at_level("WARNING"):
+        _episode.main()  # clean return: skip_dates still wins the guard below
+
+    assert any("skip_dates` is non-empty" in r.message for r in caplog.records)
+    assert len(alerts) == 1
+    assert "skip_dates" in alerts[0]
+
+
+def test_no_warning_when_schedule_manifest_disabled(monkeypatch, tmp_path, caplog):
+    """Same skip_dates list, but schedule.enabled absent — no cross-check noise."""
+    from morning_signal import episode as _episode
+    from morning_signal import watchdog as _watchdog
+
+    config = {
+        "skip_dates": [SKIP_DATE],
+        "s3_bucket": "unused",
+        "s3_region": REGION,
+    }
+    monkeypatch.setattr(_aws, "_load_runner_session", lambda: None)
+    monkeypatch.setattr(_aws, "_maybe_load_from_ssm", lambda: None)
+    monkeypatch.setattr(_config, "load_config", lambda: config)
+    monkeypatch.setattr(_config, "EPISODES_DIR", tmp_path / "episodes")
+    monkeypatch.setattr(_config, "SCRIPTS_DIR", tmp_path / "scripts")
+    monkeypatch.setattr(
+        _episode, "generate_script", lambda *a, **k: pytest.fail("must not run")
+    )
+
+    alerts: list[str] = []
+    monkeypatch.setattr(_watchdog, "send_alert", lambda c, e, m: alerts.append(m) or True)
+
+    monkeypatch.setattr(
+        sys, "argv", ["generate_episode.py", "--date", SKIP_DATE, "--edition", "am"]
+    )
+    with caplog.at_level("WARNING"):
+        _episode.main()
+
+    assert not any("skip_dates` is non-empty" in r.message for r in caplog.records)
+    assert alerts == []
