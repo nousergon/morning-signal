@@ -939,28 +939,17 @@ def generate_script(
             fallback_outcome = None
             primary_failed_exc = exc
 
-        # If the configured fallback is non-Anthropic and also failed, try the
-        # Anthropic default as final resort before aborting outright.
+        # If the configured fallback is non-Anthropic and also failed, the
+        # standard Anthropic last-resort is deliberately NOT used — Brian chose
+        # cost over coverage: a missed episode is worth the Anthropic API cost
+        # savings. The error propagates from here; there is no further fallback.
         if not script and fallback_spec.provider != "anthropic":
             log.error(
                 f"{edition_label} edition for {friendly_date}: fallback "
                 f"provider={fallback_spec.provider!r} model="
-                f"{fallback_spec.model!r} also failed — falling back to "
-                f"the Anthropic default ({_anthropic_default_spec(config).model})."
+                f"{fallback_spec.model!r} also failed — no Anthropic "
+                f"last-resort configured. Aborting episode for today."
             )
-            try:
-                ultimate_spec = _anthropic_default_spec(config)
-                ultimate_client = LLMClient(ultimate_spec, max_retries=5)
-                script, fallback_outcome = _attempt_episode(
-                    ultimate_client, config, prompt_text, user_content,
-                    date_str, edition, required_topics, effective_edition,
-                    edition_label, friendly_date,
-                )
-                used_spec = ultimate_spec
-                fell_back = True
-            except RuntimeError as exc:
-                primary_failed_exc = exc
-                fallback_outcome = None
 
     if not script and primary_failed_exc is not None:
         # Not fallback-eligible (anthropic-only config, or MORNING_SIGNAL_LLM
