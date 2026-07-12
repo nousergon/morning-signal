@@ -24,11 +24,13 @@ from krepis.llm import GroundedResult, LLMUsage
 from morning_signal import claude
 
 
-def _grounded(*, provider, model, text, n_searches):
+def _grounded(*, provider, model, text, n_searches, citations=None):
+    if citations is None:
+        citations = [{"url": "https://example.com/news", "title": "Example News Article"}]
     return GroundedResult(
         text=text, model=model, provider=provider,
         usage=LLMUsage(web_search_requests=n_searches),
-        raw_request={}, raw_response=None, searches=[], citations=[],
+        raw_request={}, raw_response=None, searches=[], citations=citations,
     )
 
 
@@ -59,7 +61,7 @@ def _base_config(**overrides):
         "claude_model": "claude-haiku-4-5",
         "max_tokens": 4096,
         "web_search_max_uses": 20,
-        "min_web_searches": 1,
+        "min_grounding_citations": 1,
     }
     cfg.update(overrides)
     return cfg
@@ -108,12 +110,13 @@ def test_falls_back_when_primary_produces_empty_content(monkeypatch, tmp_path):
     assert decision["fallback_outcome"]["script_chars"] > 0
 
 
-def test_falls_back_when_primary_hits_min_web_searches_floor(monkeypatch, tmp_path):
+def test_falls_back_when_primary_has_no_search_results(monkeypatch, tmp_path):
     monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
     plan = {
         "openrouter": [
             _grounded(provider="openrouter", model="moonshotai/kimi-k2.6",
-                      text="some text but too few searches", n_searches=0),
+                      text="some text but too few searches", n_searches=0,
+                      citations=[]),
         ],
         "anthropic": [
             _grounded(provider="anthropic", model="claude-haiku-4-5",
@@ -128,7 +131,7 @@ def test_falls_back_when_primary_hits_min_web_searches_floor(monkeypatch, tmp_pa
     assert "Fallback content" in script
     decision = json.loads(_decision_path(tmp_path).read_text())
     assert decision["fell_back"] is True
-    assert decision["primary_outcome"] is None  # the floor raised before an outcome existed
+    assert decision["primary_outcome"] is None  # the guard raised before an outcome existed
 
 
 def test_hard_aborts_when_both_primary_and_fallback_fail(monkeypatch, tmp_path):
@@ -156,14 +159,14 @@ def test_hard_aborts_when_both_primary_and_fallback_fail(monkeypatch, tmp_path):
 
 
 def test_no_fallback_when_primary_is_already_anthropic(monkeypatch, tmp_path):
-    """Existing behavior preserved exactly: an anthropic-only config that
-    hits the min_web_searches floor hard-aborts immediately, no wasted
-    second call to the same model."""
+    """Anthropic-only config: the content-grounding guard hard-aborts
+    immediately on zero citations, no wasted second call to the same model."""
     monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
     plan = {
         "anthropic": [
             _grounded(provider="anthropic", model="claude-haiku-4-5",
-                      text="not enough searching", n_searches=0),
+                      text="not enough searching", n_searches=0,
+                      citations=[]),
         ],
     }
     monkeypatch.setattr(claude, "LLMClient", _client_factory(plan))
@@ -171,7 +174,7 @@ def test_no_fallback_when_primary_is_already_anthropic(monkeypatch, tmp_path):
     config = _base_config()
     config.pop("llm")  # legacy anthropic-default resolution path
 
-    with pytest.raises(RuntimeError, match="web_search floor not met"):
+    with pytest.raises(RuntimeError, match="zero citations"):
         claude.generate_script(config, "2026-07-06", "am")
 
     # No decision log at all — the exception propagates before we'd write one.

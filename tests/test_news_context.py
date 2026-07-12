@@ -331,7 +331,7 @@ def test_generate_script_injects_news_block_when_enabled(fresh_ge_module, tmp_pa
         _config, "PROMPT_FILE", prompt_path
     ), patch.object(_claude, "load_news_context", return_value=fake_block):
         fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0}, "2026-05-14", "am"
+            {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0}, "2026-05-14", "am"
         )
 
     _, kwargs = client.messages.create.call_args
@@ -361,7 +361,7 @@ def test_generate_script_no_injection_when_context_empty(fresh_ge_module, tmp_pa
         _config, "PROMPT_FILE", prompt_path
     ), patch.object(_claude, "load_news_context", return_value=""):
         fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0}, "2026-05-14", "am"
+            {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0}, "2026-05-14", "am"
         )
 
     _, kwargs = client.messages.create.call_args
