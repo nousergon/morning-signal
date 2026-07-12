@@ -144,7 +144,7 @@ def test_generate_script_passes_edition_to_user_message(fresh_ge_module, tmp_pat
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path):
         out = fresh_ge_module.generate_script(
-            {"claude_model": "claude-sonnet-4-6", "max_tokens": 100, "min_web_searches": 0}, "2026-05-14", "am"
+            {"claude_model": "claude-sonnet-4-6", "max_tokens": 100, "min_grounding_citations": 0}, "2026-05-14", "am"
         )
     # Mock returned "Today's script." (no canonical opener) — post-process
     # MUST prepend the opener so downstream TTS sees the welcome line.
@@ -181,7 +181,7 @@ def test_generate_script_exits_on_empty_response(fresh_ge_module, tmp_path):
          patch.object(_config, "PROMPT_FILE", prompt_path):
         try:
             fresh_ge_module.generate_script(
-                {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0}, "2026-05-14", "am"
+                {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0}, "2026-05-14", "am"
             )
         except SystemExit as e:
             assert e.code == 1
@@ -197,7 +197,7 @@ def test_generate_script_pm_edition_label(fresh_ge_module, tmp_path):
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path):
         out = fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0}, "2026-05-14", "pm"
+            {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0}, "2026-05-14", "pm"
         )
     _, kwargs = client.messages.create.call_args
     msgs = kwargs["messages"]
@@ -219,7 +219,7 @@ def test_generate_script_weekend_uses_weekend_prompt_and_prefill(fresh_ge_module
          patch.object(_config, "PROMPT_FILE", weekday_prompt), \
          patch.object(_config, "PROMPT_WEEKEND_FILE", weekend_prompt):
         out = fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0}, "2026-05-16", "am"
+            {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0}, "2026-05-16", "am"
         )
 
     _, kwargs = client.messages.create.call_args
@@ -249,7 +249,7 @@ def test_generate_script_web_search_max_uses_is_configurable(fresh_ge_module, tm
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path):
         fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1, "web_search_max_uses": 5, "min_web_searches": 0},
+            {"claude_model": "x", "max_tokens": 1, "web_search_max_uses": 5, "min_grounding_citations": 0},
             "2026-05-14",
             "am",
         )
@@ -270,7 +270,7 @@ def test_generate_script_loads_personal_prompt(fresh_ge_module, tmp_path):
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", personal_path):
         fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0},
+            {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0},
             "2026-05-28", "am",
         )
 
@@ -409,7 +409,7 @@ def test_generate_script_prepends_opener_when_model_drops_it(fresh_ge_module, tm
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path):
         out = fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0}, "2026-05-14", "am"
+            {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0}, "2026-05-14", "am"
         )
     assert out.startswith("Welcome to Morning Signal.")
     assert "Here is today's briefing." in out
@@ -429,7 +429,7 @@ def test_generate_script_does_not_double_prepend_when_model_obeys(fresh_ge_modul
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path):
         out = fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0}, "2026-05-14", "am"
+            {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0}, "2026-05-14", "am"
         )
     assert out.count("Welcome to Morning Signal.") == 1
     assert out.startswith("Welcome to Morning Signal.")
@@ -438,13 +438,10 @@ def test_generate_script_does_not_double_prepend_when_model_obeys(fresh_ge_modul
 # ── web-search floor guard (fail-loud) ───────────────────────────────────────
 
 
-def test_generate_script_aborts_when_zero_searches(fresh_ge_module, tmp_path):
-    """Fail-loud guard: an edition that ran 0 web searches is almost
-    certainly model-confabulated rather than grounded in live news.
-    generate_script MUST raise BEFORE returning (so nothing is ever sent
-    to TTS / published) instead of shipping ungrounded copy. This is the
-    backstop for the 2026-06-16 regression where a pre-fetched news block
-    made the model skip search and hallucinate a whole episode.
+def test_generate_script_aborts_when_no_search_results(fresh_ge_module, tmp_path):
+    """Content-grounding guard: an edition with zero search citations is
+    ungrounded — generate_script MUST raise before publishing. Replaces the
+    old min_web_searches count-based heuristic with a content-substance check.
     """
     prompt_path = tmp_path / "p.md"
     prompt_path.write_text("prompt")
@@ -453,14 +450,15 @@ def test_generate_script_aborts_when_zero_searches(fresh_ge_module, tmp_path):
     with patch.dict(sys.modules, {"anthropic": anth_mock}), \
          patch.object(_config, "PROMPT_FILE", prompt_path), \
          patch.object(_claude, "record_search_events", return_value=0):
-        with pytest.raises(RuntimeError, match="web_search floor not met"):
+        with pytest.raises(RuntimeError, match="zero citations"):
             fresh_ge_module.generate_script(
                 {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
             )
 
 
-def test_generate_script_passes_when_search_floor_met(fresh_ge_module, tmp_path):
-    """A grounded edition (searches >= floor) generates normally."""
+def test_generate_script_passes_when_grounding_guard_disabled(fresh_ge_module, tmp_path):
+    """With the grounding guard disabled (min_grounding_citations=0), a script
+    that has no search citations still generates normally."""
     prompt_path = tmp_path / "p.md"
     prompt_path.write_text("prompt")
 
@@ -469,15 +467,16 @@ def test_generate_script_passes_when_search_floor_met(fresh_ge_module, tmp_path)
          patch.object(_config, "PROMPT_FILE", prompt_path), \
          patch.object(_claude, "record_search_events", return_value=3):
         out = fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1}, "2026-05-14", "am"
+            {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0},
+            "2026-05-14", "am",
         )
     assert out.startswith("Welcome to Morning Signal.")
     assert "Grounded body." in out
 
 
-def test_generate_script_zero_search_allowed_when_floor_disabled(fresh_ge_module, tmp_path):
-    """OSS opt-out: ``min_web_searches: 0`` disables the guard so a prompt
-    that legitimately needs no live search still generates."""
+def test_generate_script_zero_search_allowed_when_guard_disabled(fresh_ge_module, tmp_path):
+    """Opt-out: ``min_grounding_citations: 0`` disables the content-grounding
+    guard so a prompt that legitimately needs no live search still generates."""
     prompt_path = tmp_path / "p.md"
     prompt_path.write_text("prompt")
 
@@ -486,7 +485,7 @@ def test_generate_script_zero_search_allowed_when_floor_disabled(fresh_ge_module
          patch.object(_config, "PROMPT_FILE", prompt_path), \
          patch.object(_claude, "record_search_events", return_value=0):
         out = fresh_ge_module.generate_script(
-            {"claude_model": "x", "max_tokens": 1, "min_web_searches": 0},
+            {"claude_model": "x", "max_tokens": 1, "min_grounding_citations": 0},
             "2026-05-14", "am",
         )
     assert out.startswith("Welcome to Morning Signal.")
@@ -525,7 +524,7 @@ def test_generate_script_publishes_with_alert_when_required_topic_unmet(
             {
                 "claude_model": "x",
                 "max_tokens": 1,
-                "min_web_searches": 6,
+                "min_grounding_citations": 0,
                 "required_search_topics": [{"name": "MAGA Pulse", "keywords": ["maga"]}],
             },
             "2026-06-26",
@@ -571,7 +570,7 @@ def test_generate_script_required_topics_fatal_flag_restores_abort(
                 {
                     "claude_model": "x",
                     "max_tokens": 1,
-                    "min_web_searches": 6,
+                    "min_grounding_citations": 0,
                     "required_search_topics": [{"name": "MAGA Pulse", "keywords": ["maga"]}],
                     "required_search_topics_fatal": True,
                 },

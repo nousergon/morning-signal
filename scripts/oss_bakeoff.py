@@ -146,14 +146,14 @@ def _run_side(
         edition=effective_edition, script=result.text,
         citations=result.citations,
     )
-    min_web_searches = config.get("min_web_searches", 1)
+    min_citations = config.get("min_grounding_citations", 1)
     return {
         "label": label,
         "provider": result.provider,
         "model": result.model,
         "n_searches": n_searches,
         "n_citations": len(result.citations),
-        "min_web_searches_met": n_searches >= min_web_searches,
+        "has_grounding_citations": len(result.citations) >= min_citations,
         "unmet_topics": unmet,
         "input_tokens": result.usage.input_tokens,
         "output_tokens": result.usage.output_tokens,
@@ -169,8 +169,8 @@ def _run_side(
 
 def _parity(prod: dict, candidate: dict) -> dict:
     return {
-        "both_met_min_web_searches": (
-            prod["min_web_searches_met"] and candidate["min_web_searches_met"]
+        "both_met_grounding": (
+            prod["has_grounding_citations"] and candidate["has_grounding_citations"]
         ),
         "unmet_topics_match": (
             set(prod["unmet_topics"]) == set(candidate["unmet_topics"])

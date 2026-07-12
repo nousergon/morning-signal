@@ -318,12 +318,13 @@ def _text(t: str) -> _Blk:
     return _Blk(type="text", text=t)
 
 
-def _search(block_id: str, query: str) -> list[_Blk]:
+def _search(block_id: str, query: str, *,
+            title: str = "Example News Article Title") -> list[_Blk]:
     return [
         _Blk(type="server_tool_use", name="web_search", id=block_id,
              input={"query": query}),
         _Blk(type="web_search_tool_result", tool_use_id=block_id,
-             content=[_Blk(url="https://example.com/x")]),
+             content=[_Blk(url="https://example.com/x", title=title)]),
     ]
 
 
@@ -393,7 +394,7 @@ def _gs_config(**overrides) -> dict:
         "claude_model": "claude-haiku-4-5",
         "max_tokens": 256,
         "web_search_max_uses": 20,
-        "min_web_searches": 1,
+        "min_grounding_citations": 1,
         "required_search_topics": [dict(t) for t in CONFIG_TOPICS],
     }
     cfg.update(overrides)

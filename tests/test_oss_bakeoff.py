@@ -46,7 +46,7 @@ def bakeoff_module(monkeypatch, tmp_path: Path):
         "claude_model: claude-haiku-4-5\n"
         "max_tokens: 4096\n"
         "web_search_max_uses: 20\n"
-        "min_web_searches: 1\n"
+        "min_grounding_citations: 1\n"
         "required_search_topics:\n"
         "  - name: Political pulse\n"
         "    keywords: [maga]\n"
@@ -138,7 +138,7 @@ def test_run_bakeoff_reports_parity_for_every_candidate(bakeoff_module, monkeypa
         assert candidate["unmet_topics"] == []
         assert candidate["parity"]["unmet_topics_match"] is True
         assert candidate["parity"]["candidate_strictly_worse"] is False
-        assert candidate["parity"]["both_met_min_web_searches"] is True
+        assert candidate["parity"]["both_met_grounding"] is True
 
 
 def test_run_bakeoff_flags_one_candidate_strictly_worse(bakeoff_module, monkeypatch):

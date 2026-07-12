@@ -87,7 +87,7 @@ def sample_config() -> dict:
         # web search; disable the fail-loud search-floor guard so the
         # full-pipeline path runs (the guard itself is covered directly in
         # test_orchestration's web-search-floor tests).
-        "min_web_searches": 0,
+        "min_grounding_citations": 0,
         "feed_max_episodes": 90,
         "notifications": {
             # Disabled by default in the fixture — tests that exercise

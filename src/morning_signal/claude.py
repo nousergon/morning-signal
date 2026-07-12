@@ -3,7 +3,7 @@
 Runs through the krepis provider-agnostic adapter (``krepis.llm.LLMClient``).
 Phase A of the fleet-wide provider migration (2026-07-03): generation stays on
 the ANTHROPIC transport in production. The three production incident guards
-below (``min_web_searches`` floor, ``required_search_topics`` coverage, and
+below (content-grounding verification, ``required_search_topics`` coverage, and
 forced-search recovery) are now provider-agnostic (config#1659 Phase B
 re-key): they work off whichever signal a transport actually exposes —
 Anthropic's per-query telemetry (``GroundedResult.searches``) when present,
@@ -49,6 +49,111 @@ from morning_signal.search_telemetry import (
 
 log = logging.getLogger("morning-signal")
 
+
+def verify_script_grounded(
+    script: str,
+    citations: list[dict] | None,
+    *,
+    date_str: str,
+    edition_label: str,
+    friendly_date: str,
+    provider: str,
+    min_citations: int = 1,
+) -> None:
+    """Verify the generated script is grounded in web search results.
+
+    Replaces the raw search-count floor (``min_web_searches``) which was a
+    proxy metric — counting tool invocations rather than measuring whether
+    the model actually used search content at all. Different providers
+    (Anthropic, OpenRouter/Kimi) search with very different cadences, so a
+    count floor penalizes providers that do fewer, more targeted searches
+    without telling you anything about output quality.
+
+    This function checks the one thing that actually *is* provider-agnostic
+    and meaningful: **did the search tool return substantive web content?**
+    If it did, the model has the raw material to ground its output in live
+    news. If it didn't (zero citations, all errors), the episode is almost
+    certainly hallucinated — the same failure mode ``min_web_searches``
+    existed to catch, but caught by the real signal instead of a proxy.
+
+    Checks:
+    1. **Citations exist** — at least one search result returned a citation
+       with a real title. Cross-provider: Anthropic citations carry
+       ``url`` + ``title``; OpenRouter citations carry ``url`` + ``title``
+       + ``snippet``. A non-empty title proves the search tool worked and
+       found a real page.
+    2. **Date awareness** (WARN only) — the episode date appears in the
+       script, indicating the model knows the current temporal context.
+    3. **Anti-hallucination markers** (WARN only) — the script avoids
+       training-data tells like "as of my last update" that indicate the
+       model is relying on its parametric knowledge rather than search.
+
+    Raises :exc:`RuntimeError` when check 1 fails: zero substantive
+    citations means the search tool either wasn't called or returned no
+    useful content — the episode is ungrounded and must not be published.
+    """
+    if not citations:
+        raise RuntimeError(
+            f"Search returned zero citations for {friendly_date} on "
+            f"provider={provider!r} — the model likely did not call the "
+            f"web_search tool at all. Refusing to publish an episode that "
+            f"cannot be grounded in live web content. "
+            f"(Set min_grounding_citations=0 in config to disable this check.)"
+        )
+
+    # Check 1: substantive citations (have a real title)
+    substantive = [
+        c for c in citations
+        if c.get("title") and str(c.get("title") or "").strip()
+    ]
+
+    if len(substantive) < min_citations:
+        raise RuntimeError(
+            f"Only {len(substantive)}/{len(citations)} search citations "
+            f"contained real web content (need ≥{min_citations}) for "
+            f"{friendly_date} on provider={provider!r}. The search tool "
+            f"returned URLs but the results had no substantive metadata — "
+            f"likely the search hit errors or empty pages. Refusing to "
+            f"publish an ungrounded episode."
+        )
+
+    log.info(
+        f"Grounding check passed: {len(substantive)} substantive citations "
+        f"from {len(citations)} total on {provider!r} — search returned "
+        f"real web content."
+    )
+
+    # Check 2: date awareness (WARN only, never blocks)
+    date_str_parts = date_str.replace("-", " ")
+    script_lower = script.lower()
+    if date_str not in script and date_str_parts not in script_lower:
+        log.warning(
+            f"Script for {friendly_date} does not mention the episode date "
+            f"({date_str}) — the model may not have grounded the episode "
+            f"in today's news. Publishing anyway since search citations "
+            f"exist."
+        )
+
+    # Check 3: anti-hallucination markers (WARN only)
+    hallucination_tells = [
+        "as of my last update",
+        "as of my knowledge cutoff",
+        "i don't have access to real-time",
+        "i don't have access to current",
+        "according to my training data",
+        "my training data only goes up to",
+        "my knowledge cutoff",
+    ]
+    for tell in hallucination_tells:
+        if tell in script_lower:
+            log.warning(
+                f"Possible hallucination marker detected in script for "
+                f"{friendly_date}: contains {tell!r} — the model may be "
+                f"relying on training data rather than search results. "
+                f"Episode published but flag for review."
+            )
+            break
+
 # Env override for the active ModelSpec (wins over config) — operator/test
 # escape hatch. The durable flip surface is the ``llm`` key in config.yaml —
 # which in production IS the /morning-signal/config-yaml SSM parameter, so a
@@ -65,17 +170,29 @@ LLM_DECISION_S3_PREFIX = "ops/llm_decisions/"
 
 
 def _anthropic_default_spec(config: dict) -> ModelSpec:
-    """The anthropic-transport spec used both as :func:`resolve_llm_spec`'s
-    legacy default AND as :func:`generate_script`'s unconditional fallback
-    when a non-anthropic primary spec fails to produce usable content
-    (config#1659 Phase B: default to an OSS primary, fall back to this
-    known-reliable spec on exhaustion rather than aborting outright).
+    """The anthropic-transport spec used as :func:`resolve_llm_spec`'s
+    legacy default and as the final-layer fallback when no
+    ``fallback_llm`` is configured.
     """
     return ModelSpec(
         "anthropic",
         config.get("claude_model", "claude-sonnet-4-6"),
         max_tokens=config.get("max_tokens", 4096),
     )
+
+
+def resolve_fallback_spec(config: dict) -> ModelSpec:
+    """The fallback ModelSpec used when the primary spec fails.
+
+    Reads config ``fallback_llm`` (same format as ``llm`` — a JSON string
+    or dict with provider/model/reasoning keys). Falls back to
+    ``_anthropic_default_spec`` when unset, preserving pre-migration
+    behavior for configs that only set ``claude_model``.
+    """
+    configured = config.get("fallback_llm")
+    if configured:
+        return parse_model_spec(str(configured), source="config 'fallback_llm'")
+    return _anthropic_default_spec(config)
 
 
 def resolve_llm_spec(config: dict) -> ModelSpec:
@@ -450,7 +567,7 @@ def _attempt_episode(
     unmet_topics/script_chars) for the LLM-decision log.
 
     Raises :exc:`RuntimeError` for the two HARD-abort policies —
-    ``min_web_searches`` floor and ``required_search_topics_fatal`` — same
+    content-grounding verification and ``required_search_topics_fatal`` — same
     as always. :func:`generate_script` decides what a raise (or an empty-
     but-non-raising return) means: for a provider with no fallback
     configured, it propagates exactly as before; for a primary spec that
@@ -462,33 +579,39 @@ def _attempt_episode(
         llm_client, config, prompt_text, user_content, date_str, edition
     )
 
-    # Fail-loud guard: an edition that ran fewer than ``min_web_searches``
-    # web searches is almost certainly model-confabulated rather than
-    # grounded in live news — the failure mode that shipped a fully
-    # hallucinated, politics-free episode on 2026-06-16 when the
-    # pre-fetched news block told the model it could skip searching.
+    # Content-grounding verification: replaces the old raw search-count
+    # floor (``min_web_searches``) which was a proxy metric — counting
+    # tool invocations rather than measuring whether the model actually
+    # used search content. Different providers search with very different
+    # cadences, so a count floor penalizes providers that do fewer,
+    # more targeted searches. The real signal is: did the search tool
+    # return substantive web content? ``verify_script_grounded`` checks
+    # that citations exist with real metadata, and also WARNs on
+    # date-awareness gaps and anti-hallucination tells.
     # Raise BEFORE any TTS/publish so the silent-failure watchdog catches
-    # the absent fresh episode instead of a bad one going live. OSS users
-    # with a prompt that legitimately needs no live search can set
-    # ``min_web_searches: 0`` to opt out.
-    min_web_searches = config.get("min_web_searches", 1)
-    if n_searches < min_web_searches:
-        log.error(
-            f"ABORT: {edition_label} edition for {friendly_date} ran only "
-            f"{n_searches} web search(es) (floor is {min_web_searches}) on "
-            f"provider={llm_client.spec.provider!r} model="
-            f"{llm_client.spec.model!r}. A zero/low-search edition is "
-            f"almost certainly hallucinated rather than grounded in live "
-            f"news — refusing to publish. Check the web_search tool, the "
-            f"model, and any pre-fetched news-context framing. To "
-            f"intentionally allow this, set min_web_searches in config."
+    # the absent fresh episode instead of a bad one going live.
+    min_citations = config.get("min_grounding_citations", 1)
+    # Backward compat: if old ``min_web_searches`` is set, map it onto
+    # the new key (0 = disable, just like before).
+    if "min_web_searches" in config and "min_grounding_citations" not in config:
+        min_citations = config["min_web_searches"]
+        log.warning(
+            "DEPRECATED: min_web_searches is retired in favour of "
+            "min_grounding_citations (same semantics: ≥0; 0 = disable). "
+            "Update your config."
         )
-        raise RuntimeError(
-            f"web_search floor not met: {n_searches} < {min_web_searches} "
-            f"for {date_str}-{edition} — aborting before publish"
+    if min_citations > 0:
+        verify_script_grounded(
+            script=result.text,
+            citations=result.citations,
+            date_str=date_str,
+            edition_label=edition_label,
+            friendly_date=friendly_date,
+            provider=llm_client.spec.provider,
+            min_citations=min_citations,
         )
 
-    # Per-segment coverage guard: the global ``min_web_searches`` floor only
+    # Per-segment coverage guard: the global content-grounding check only
     # asserts the edition was grounded *somewhere*; it does NOT guarantee a
     # *specific* search-critical segment was covered. The failure mode this
     # catches (2026-06-17): with a tight ``web_search_max_uses`` budget the
@@ -527,8 +650,8 @@ def _attempt_episode(
     # a topic counts as covered only when it was both searched AND its segment
     # actually aired — closing the blind spot where another segment's search
     # (e.g. "Elon Musk / SpaceX") falsely satisfied a political topic. The
-    # global ``min_web_searches`` floor above stays HARD regardless — a
-    # near-zero-search edition is hallucinated wholesale, a different and
+    # global content-grounding check above stays in effect regardless — a
+    # no-search-results edition is hallucinated wholesale, a different and
     # unrecoverable failure.
     unmet: list[str] = []
     if required_topics:
@@ -738,7 +861,7 @@ def generate_script(
 
     Provider fallback (config#1659): the ``llm`` config knob can point at
     a non-Anthropic primary (e.g. an OpenRouter open-weight model). If
-    that primary's OWN attempt hard-fails (``min_web_searches`` floor) or
+    that primary's OWN attempt hard-fails (content-grounding verification) or
     silently produces no usable content — a real, live-verified failure
     mode for reasoning-capable OpenRouter models, 2026-07-06 — this falls
     through to ONE fresh attempt on :func:`_anthropic_default_spec` (the
@@ -791,28 +914,55 @@ def generate_script(
                 f"{edition_label} edition for {friendly_date}: primary "
                 f"provider={primary_spec.provider!r} model="
                 f"{primary_spec.model!r} aborted ({primary_failed_exc}) — "
-                f"falling back to the Anthropic default."
+                f"falling back to the fallback spec."
             )
         else:
             log.error(
                 f"{edition_label} edition for {friendly_date}: primary "
                 f"provider={primary_spec.provider!r} model="
                 f"{primary_spec.model!r} produced no usable content after "
-                f"its own retries — falling back to the Anthropic default."
+                f"its own retries — falling back to the fallback spec."
             )
+        primary_failed_exc = None
         fallback_spec = _anthropic_default_spec(config)
-        fallback_client = LLMClient(fallback_spec, max_retries=5)
-        # A fallback failure is NOT caught here — it propagates exactly like
-        # a primary failure would on an anthropic-only config, since there
-        # is nowhere further to fall back to.
-        script, fallback_outcome = _attempt_episode(
-            fallback_client, config, prompt_text, user_content, date_str,
-            edition, required_topics, effective_edition, edition_label,
-            friendly_date,
-        )
-        used_spec = fallback_spec
-        fell_back = True
-    elif not script and primary_failed_exc is not None:
+        try:
+            fallback_spec = resolve_fallback_spec(config)
+            fallback_client = LLMClient(fallback_spec, max_retries=5)
+            script, fallback_outcome = _attempt_episode(
+                fallback_client, config, prompt_text, user_content, date_str,
+                edition, required_topics, effective_edition, edition_label,
+                friendly_date,
+            )
+            used_spec = fallback_spec
+            fell_back = True
+        except RuntimeError as exc:
+            fallback_outcome = None
+            primary_failed_exc = exc
+
+        # If the configured fallback is non-Anthropic and also failed, try the
+        # Anthropic default as final resort before aborting outright.
+        if not script and fallback_spec.provider != "anthropic":
+            log.error(
+                f"{edition_label} edition for {friendly_date}: fallback "
+                f"provider={fallback_spec.provider!r} model="
+                f"{fallback_spec.model!r} also failed — falling back to "
+                f"the Anthropic default ({_anthropic_default_spec(config).model})."
+            )
+            try:
+                ultimate_spec = _anthropic_default_spec(config)
+                ultimate_client = LLMClient(ultimate_spec, max_retries=5)
+                script, fallback_outcome = _attempt_episode(
+                    ultimate_client, config, prompt_text, user_content,
+                    date_str, edition, required_topics, effective_edition,
+                    edition_label, friendly_date,
+                )
+                used_spec = ultimate_spec
+                fell_back = True
+            except RuntimeError as exc:
+                primary_failed_exc = exc
+                fallback_outcome = None
+
+    if not script and primary_failed_exc is not None:
         # Not fallback-eligible (anthropic-only config, or MORNING_SIGNAL_LLM
         # pinned) — preserve the original hard-abort behavior exactly.
         raise primary_failed_exc
