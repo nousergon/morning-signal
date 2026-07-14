@@ -42,7 +42,7 @@ def make_episode(tmp_episodes_dir: Path, tmp_scripts_dir: Path):
     """Factory that writes a {date}-{edition}.{json,md,mp3} triple."""
 
     def _make(date: str, edition: str | None = None, audio_bytes: bytes = b"\x00" * 1024,
-              script_text: str = "hello world " * 50) -> dict:
+              script_text: str = "hello world " * 50, title: str | None = None) -> dict:
         stem = f"{date}-{edition}" if edition else date
         script_path = tmp_scripts_dir / f"{stem}.md"
         audio_path = tmp_episodes_dir / f"{stem}.mp3"
@@ -56,6 +56,8 @@ def make_episode(tmp_episodes_dir: Path, tmp_scripts_dir: Path):
         }
         if edition:
             meta["edition"] = edition
+        if title:
+            meta["title"] = title
         (tmp_episodes_dir / f"{stem}.json").write_text(json.dumps(meta))
         return meta
 

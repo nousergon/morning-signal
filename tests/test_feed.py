@@ -51,6 +51,21 @@ def test_feed_item_title_back_catalog_no_edition(
     assert item.find("title").text == "Morning Signal — 2026-04-13"
 
 
+def test_feed_item_title_uses_custom_title_when_present(
+    sample_config, tmp_episodes_dir, make_episode
+):
+    """A schedule-override 'custom episode' carries its own derived title
+    in metadata (episode._derive_title) instead of the date-stamped default."""
+    make_episode(
+        "2026-05-14", "am",
+        title="Morning Signal — NVIDIA earnings deep dive",
+    )
+    xml = feed_module.generate_feed(sample_config, tmp_episodes_dir, sample_config["base_url"])
+    root = _parse(xml)
+    item = root.find("channel").find("item")
+    assert item.find("title").text == "Morning Signal — NVIDIA earnings deep dive"
+
+
 def test_feed_orders_items_newest_first(sample_config, tmp_episodes_dir, make_episode):
     make_episode("2026-04-13", "am")
     make_episode("2026-05-14", "am")

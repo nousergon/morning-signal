@@ -32,13 +32,34 @@ def save_script(script: str, date_str: str, edition: str) -> Path:
     return path
 
 
-def save_metadata(date_str: str, edition: str, script_path: Path, audio_path: Path | None) -> None:
+def _derive_title(schedule_entry: dict | None) -> str | None:
+    """Episode title override for a schedule-driven "custom episode".
+
+    ``None`` for regular programming — ``feed.py`` falls back to the
+    default ``"Morning Signal — {date} {EDITION}"`` title in that case.
+    Only ``override`` entries (the episode REPLACES regular programming
+    with the scheduled deep-dive topic) get a derived title; ``extend``
+    entries still air the regular lineup plus one extra segment, so they
+    keep the default title. Deterministic — built directly from the
+    operator-entered ``topic`` field (the custom prompt itself), not an
+    extra LLM call reinterpreting it.
+    """
+    if schedule_entry and schedule_entry.get("mode") == "override":
+        return f"Morning Signal — {schedule_entry['topic']}"
+    return None
+
+
+def save_metadata(
+    date_str: str, edition: str, script_path: Path, audio_path: Path | None,
+    title: str | None = None,
+) -> None:
     meta = {
         "date": date_str,
         "edition": edition,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "script_file": str(script_path),
         "audio_file": str(audio_path) if audio_path else None,
+        "title": title,
     }
     (_config.EPISODES_DIR / f"{_episode_stem(date_str, edition)}.json").write_text(json.dumps(meta, indent=2))
 
@@ -356,7 +377,10 @@ def main():
                     synthesize(script, audio_path, config)
                     fresh_uploads.add(audio_path.name)
 
-                save_metadata(args.date, args.edition, script_path, audio_path)
+                save_metadata(
+                    args.date, args.edition, script_path, audio_path,
+                    title=_derive_title(schedule_entry),
+                )
 
             if not args.script_only and not args.no_publish:
                 progress.update(phase, description="[bold blue]Publishing to S3")
