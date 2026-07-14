@@ -53,7 +53,14 @@ dependencies = [
     # of real search activity, permanently breaking the min_web_searches
     # floor on that transport — confirmed live re-running the config#1659
     # bakeoff on 0.11.1 before this fix landed.
-    "krepis[anthropic,openai]>=0.11.2",
+    # >=0.12.2 for complete_grounded raising LLMError on an unresolved/
+    # leaked OpenRouter tool call (krepis#22) — without it, a model that
+    # emits its own native tool-call token dialect straight into
+    # message.content (reproduced live 2026-07-14 against Kimi K2.6:
+    # `<|tool_calls_section_begin|>...`) is trusted as a valid final
+    # answer instead of triggering the existing fallback-to-secondary-
+    # provider path, and a garbage/empty-content episode ships live.
+    "krepis[anthropic,openai]>=0.12.2",
     "pydantic>=2.0",
     # Pydantic v2 cannot eval PEP 604 `str | None` field annotations under
     # Python 3.9 even with `from __future__ import annotations` (mirrors krepis).
