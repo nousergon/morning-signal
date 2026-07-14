@@ -153,3 +153,34 @@ def test_save_metadata_handles_audio_path_none(fresh_ge_module, tmp_episodes_dir
     fresh_ge_module.save_metadata("2026-05-14", "am", Path("/tmp/x.md"), None)
     meta = json.loads((tmp_episodes_dir / "2026-05-14-am.json").read_text())
     assert meta["audio_file"] is None
+
+
+def test_save_metadata_title_defaults_to_none(fresh_ge_module, tmp_episodes_dir):
+    fresh_ge_module.save_metadata("2026-05-14", "am", Path("/tmp/x.md"), Path("/tmp/x.mp3"))
+    meta = json.loads((tmp_episodes_dir / "2026-05-14-am.json").read_text())
+    assert meta["title"] is None
+
+
+def test_save_metadata_writes_custom_title(fresh_ge_module, tmp_episodes_dir):
+    fresh_ge_module.save_metadata(
+        "2026-05-14", "am", Path("/tmp/x.md"), Path("/tmp/x.mp3"),
+        title="Morning Signal — NVIDIA earnings deep dive",
+    )
+    meta = json.loads((tmp_episodes_dir / "2026-05-14-am.json").read_text())
+    assert meta["title"] == "Morning Signal — NVIDIA earnings deep dive"
+
+
+def test_derive_title_none_for_regular_programming(fresh_ge_module):
+    assert fresh_ge_module._derive_title(None) is None
+
+
+def test_derive_title_none_for_extend_mode(fresh_ge_module):
+    # extend still airs the regular lineup plus one extra segment — not a
+    # distinct "custom episode", so it keeps the default title.
+    entry = {"mode": "extend", "topic": "Fed rate decision reaction"}
+    assert fresh_ge_module._derive_title(entry) is None
+
+
+def test_derive_title_derived_from_topic_for_override_mode(fresh_ge_module):
+    entry = {"mode": "override", "topic": "NVIDIA earnings deep dive"}
+    assert fresh_ge_module._derive_title(entry) == "Morning Signal — NVIDIA earnings deep dive"

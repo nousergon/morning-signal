@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `schedule/applied/{date}-{edition}.json` so the (separate) console
   schedule page can show the entry actually aired. New module:
   `morning_signal.schedule_override`.
+- **Custom-episode RSS titles.** A schedule-override `override`-mode
+  episode (regular programming replaced entirely by a scheduled deep-dive
+  topic) now gets its own feed item title, derived directly from the
+  entry's `topic` field — e.g. `Morning Signal — NVIDIA earnings deep
+  dive` instead of the generic `Morning Signal — 2026-07-14 AM`. Regular
+  programming and `extend`-mode episodes (which still air the normal
+  lineup plus one extra segment) are unaffected and keep the default
+  date-stamped title. New `episode._derive_title`; `episode.save_metadata`
+  gains an optional `title` field (additive — omitted/`null` for existing
+  episode JSON, so old metadata keeps working unchanged).
 - **`skip_dates:` config list — skip specific dates entirely.** Days the
   listener can't listen (travel, vacation) as ISO `YYYY-MM-DD` strings: the
   generate run no-ops cleanly for BOTH editions (exit 0, no failure email,

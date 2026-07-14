@@ -129,10 +129,13 @@ def generate_feed(
 
         # Build <item>. Back-catalog episodes have no `edition` field; new
         # AM/PM episodes get the edition suffix in the displayed title.
+        # A schedule-override "custom episode" carries its own derived
+        # title in metadata (episode._derive_title) — regular programming
+        # has no `title` field and falls back to the date-stamped default.
         edition = meta.get("edition")
         title_date = f"{date_str} {edition.upper()}" if edition else date_str
         item = ET.SubElement(channel, "item")
-        _add(item, "title", f"Morning Signal — {title_date}")
+        _add(item, "title", meta.get("title") or f"Morning Signal — {title_date}")
         _add(item, "description", description)
         _add(item, "pubDate", format_datetime(pub_date))
         _add(item, "guid", url(f"episodes/{audio_filename}"))
