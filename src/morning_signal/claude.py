@@ -560,6 +560,7 @@ def _attempt_episode(
     effective_edition: str,
     edition_label: str,
     friendly_date: str,
+    force_search: bool = False,
 ) -> tuple[str, dict]:
     """Run one full generation attempt (first pass + optional self-heal
     recovery) against ``llm_client``'s spec. Returns ``(script, outcome)``
@@ -574,9 +575,20 @@ def _attempt_episode(
     HAS a fallback (config#1659: default to an OSS model, fall back to
     Anthropic on exhaustion), it triggers a second attempt on the fallback
     spec instead.
+
+    ``force_search=True`` deterministically forces the FIRST pass's
+    ``web_search`` call via ``tool_choice`` (see ``_invoke_and_record``) —
+    used by :func:`generate_script`'s tier-3 last-resort attempt so the
+    content-grounding check below cannot fail with zero citations the way
+    a discretionary (unforced) call can (2026-07-16: a fallback model
+    completed cleanly but never invoked the tool). Only the anthropic
+    transport supports the force; callers must not pass ``force_search=True``
+    for an OpenRouter spec (``_invoke_and_record`` raises ``LLMConfigError``
+    there rather than silently degrading).
     """
     result, n_searches = _invoke_and_record(
-        llm_client, config, prompt_text, user_content, date_str, edition
+        llm_client, config, prompt_text, user_content, date_str, edition,
+        force_search=force_search,
     )
 
     # Content-grounding verification: replaces the old raw search-count
@@ -859,19 +871,30 @@ def generate_script(
     ``max_uses`` on ``web_search`` caps server-tool fees in the runaway
     case; 20 is above the empirical typical (~15).
 
-    Provider fallback (config#1659): the ``llm`` config knob can point at
-    a non-Anthropic primary (e.g. an OpenRouter open-weight model). If
-    that primary's OWN attempt hard-fails (content-grounding verification) or
-    silently produces no usable content — a real, live-verified failure
-    mode for reasoning-capable OpenRouter models, 2026-07-06 — this falls
-    through to ONE fresh attempt on :func:`_anthropic_default_spec` (the
-    known-reliable default) rather than aborting the episode outright.
+    Provider fallback (config#1659, extended morning-signal-I118): the
+    ``llm`` config knob can point at a non-Anthropic primary (e.g. an
+    OpenRouter open-weight model). If that primary's OWN attempt hard-fails
+    (content-grounding verification) or silently produces no usable content
+    — a real, live-verified failure mode for reasoning-capable OpenRouter
+    models, 2026-07-06 — this falls through to ``resolve_fallback_spec``
+    (tier 2, config ``fallback_llm``, itself defaulting to the Anthropic
+    default when unset). If tier 2 is ALSO non-Anthropic and ALSO fails,
+    tier 3 is ONE forced-search attempt (``force_search=True``) on
+    :func:`_anthropic_default_spec` — added 2026-07-16 after a compound
+    failure (primary tool-call leak + fallback silently skipping
+    web_search) lost an episode with no further tier to catch it. Tier 3's
+    forced ``tool_choice`` makes the zero-citations failure mode that hit
+    tier 2 structurally impossible on this pass (anthropic-only capability;
+    OpenRouter cannot force its search tool at all). This tier only ever
+    fires on a compound failure of both configured tiers, so it doesn't
+    reopen the routine-cost tradeoff #110 made — it bounds the downside of
+    that tradeoff instead of removing it.
     Skipped when ``MORNING_SIGNAL_LLM`` pins an exact spec (the escape
     hatch means "run exactly this," not "with a hidden fallback"), and
     skipped when the primary IS ALREADY the anthropic spec (falling back
-    to the same model fixes nothing and doubles cost). A fallback
-    attempt's own hard-abort propagates unchanged — there is nowhere
-    further to fall back to. Either way, :func:`_record_llm_decision`
+    to the same model fixes nothing and doubles cost). Tier 3's own
+    hard-abort propagates unchanged — there is nowhere further to fall
+    back to. Either way, :func:`_record_llm_decision`
     logs which model actually produced (or failed to produce) the script.
     """
     primary_spec = resolve_llm_spec(config)
@@ -939,21 +962,50 @@ def generate_script(
             fallback_outcome = None
             primary_failed_exc = exc
 
-        # If the configured fallback is non-Anthropic and also failed, the
-        # standard Anthropic last-resort is deliberately NOT used — Brian chose
-        # cost over coverage: a missed episode is worth the Anthropic API cost
-        # savings. The error propagates from here; there is no further fallback.
+        # If the configured fallback is non-Anthropic and also failed, tier 3
+        # is ONE forced-search attempt on the Anthropic default (morning-
+        # signal-I118, 2026-07-16). It only ever runs on a compound failure of
+        # BOTH configured tiers — a rare event, not the routine per-run cost
+        # #110 was optimizing away — so it doesn't reopen that cost tradeoff.
+        # force_search=True deterministically forces the web_search tool_choice
+        # (anthropic-only capability, verified live 2026-06-29): unlike tiers
+        # 1-2, this pass CANNOT complete with zero citations, which is exactly
+        # the failure mode that lost the 2026-07-16 episode (fallback model
+        # completed cleanly but chose not to invoke web_search at all).
         if not script and fallback_spec.provider != "anthropic":
             log.error(
                 f"{edition_label} edition for {friendly_date}: fallback "
                 f"provider={fallback_spec.provider!r} model="
-                f"{fallback_spec.model!r} also failed — no Anthropic "
-                f"last-resort configured. Aborting episode for today."
+                f"{fallback_spec.model!r} also failed — trying ONE "
+                f"forced-search Anthropic last-resort attempt before "
+                f"aborting."
             )
+            try:
+                ultimate_spec = _anthropic_default_spec(config)
+                ultimate_client = LLMClient(ultimate_spec, max_retries=5)
+                script, fallback_outcome = _attempt_episode(
+                    ultimate_client, config, prompt_text, user_content,
+                    date_str, edition, required_topics, effective_edition,
+                    edition_label, friendly_date, force_search=True,
+                )
+                used_spec = ultimate_spec
+                fell_back = True
+                primary_failed_exc = None
+            except RuntimeError as exc:
+                log.error(
+                    f"{edition_label} edition for {friendly_date}: forced-"
+                    f"search Anthropic last-resort also failed ({exc}) — "
+                    f"aborting episode for today."
+                )
+                fallback_outcome = None
+                primary_failed_exc = exc
 
     if not script and primary_failed_exc is not None:
-        # Not fallback-eligible (anthropic-only config, or MORNING_SIGNAL_LLM
-        # pinned) — preserve the original hard-abort behavior exactly.
+        # Either not fallback-eligible (anthropic-only config, or
+        # MORNING_SIGNAL_LLM pinned) — original hard-abort behavior — or
+        # every eligible tier (primary, tier-2 fallback, tier-3 forced-search
+        # last-resort) was exhausted. primary_failed_exc always holds the
+        # LAST tier's exception at this point.
         raise primary_failed_exc
 
     _record_llm_decision(

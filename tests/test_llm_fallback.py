@@ -55,6 +55,30 @@ def _client_factory(plan):
     return _FakeClient
 
 
+def _client_factory_with_capture(plan):
+    """Like :func:`_client_factory` but also records ``(provider,
+    force_first)`` for every ``complete_grounded`` call, so a test can
+    assert a specific tier's call actually forced ``tool_choice`` rather
+    than just asking for a search in prose."""
+    remaining = {k: list(v) for k, v in plan.items()}
+    calls = []
+
+    class _FakeClient:
+        def __init__(self, spec, **kw):
+            self.spec = spec
+
+        def complete_grounded(self, *, search, **kw):
+            calls.append((self.spec.provider, search.force_first))
+            queue = remaining.get(self.spec.provider)
+            if not queue:
+                raise AssertionError(
+                    f"no more scripted responses for provider={self.spec.provider!r}"
+                )
+            return queue.pop(0)
+
+    return _FakeClient, calls
+
+
 def _base_config(**overrides):
     cfg = {
         "llm": '{"provider": "openrouter", "model": "moonshotai/kimi-k2.6", "reasoning": {"exclude": true}}',
@@ -156,6 +180,120 @@ def test_hard_aborts_when_both_primary_and_fallback_fail(monkeypatch, tmp_path):
     decision = json.loads(_decision_path(tmp_path).read_text())
     assert decision["fell_back"] is True
     assert decision["fallback_outcome"]["script_chars"] == 0
+
+
+# ── Tier 3: forced-search Anthropic last-resort (morning-signal-I118,
+# 2026-07-16) ────────────────────────────────────────────────────────────
+#
+# 2026-07-16 production incident: primary (Kimi) leaked a raw tool-call
+# token, correctly triggered the configured (non-Anthropic) fallback
+# (DeepSeek v4-flash) — which completed cleanly but never invoked
+# web_search at all, tripping the zero-citations grounding guard with no
+# further tier to catch it. These tests exercise the tier-3 rescue added
+# to close that gap.
+
+
+def test_tier3_forced_search_rescues_after_configured_fallback_also_fails(
+    monkeypatch, tmp_path
+):
+    """Mirrors the 2026-07-16 failure exactly: primary produces no usable
+    content, the CONFIGURED (non-Anthropic) fallback hard-fails its own
+    grounding check (zero citations) — tier 3's forced-search Anthropic
+    last-resort rescues the episode instead of aborting outright."""
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+    plan = {
+        "openrouter": [
+            _grounded(provider="openrouter", model="moonshotai/kimi-k2.6",
+                      text="", n_searches=10),
+            _grounded(provider="openrouter", model="deepseek/deepseek-v4-flash",
+                      text="ungrounded text", n_searches=0, citations=[]),
+        ],
+        "anthropic": [
+            _grounded(provider="anthropic", model="claude-haiku-4-5",
+                      text="Welcome to Morning Signal. Tier 3 content.",
+                      n_searches=4),
+        ],
+    }
+    FakeClient, calls = _client_factory_with_capture(plan)
+    monkeypatch.setattr(claude, "LLMClient", FakeClient)
+
+    config = _base_config(fallback_llm=(
+        '{"provider": "openrouter", "model": "deepseek/deepseek-v4-flash", '
+        '"reasoning": {"exclude": true}}'
+    ))
+    script = claude.generate_script(config, "2026-07-06", "am")
+
+    assert "Tier 3 content" in script
+    decision = json.loads(_decision_path(tmp_path).read_text())
+    assert decision["used_provider"] == "anthropic"
+    assert decision["used_model"] == "claude-haiku-4-5"
+    assert decision["fell_back"] is True
+
+    # The whole point of the fix: tier 3's call must have forced search,
+    # not merely asked for one in prose (which is what tier 2 effectively
+    # did and still produced zero citations).
+    anthropic_calls = [force for provider, force in calls if provider == "anthropic"]
+    assert anthropic_calls == [True]
+
+
+def test_hard_aborts_when_forced_search_tier3_also_gets_zero_citations(
+    monkeypatch, tmp_path
+):
+    """Even the forced-search last resort can fail its own grounding check
+    (e.g. a genuine Anthropic outage) — must still hard-abort. There is
+    nowhere further to fall back to."""
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+    plan = {
+        "openrouter": [
+            _grounded(provider="openrouter", model="moonshotai/kimi-k2.6",
+                      text="", n_searches=10),
+            _grounded(provider="openrouter", model="deepseek/deepseek-v4-flash",
+                      text="ungrounded text", n_searches=0, citations=[]),
+        ],
+        "anthropic": [
+            _grounded(provider="anthropic", model="claude-haiku-4-5",
+                      text="still ungrounded", n_searches=0, citations=[]),
+        ],
+    }
+    monkeypatch.setattr(claude, "LLMClient", _client_factory(plan))
+
+    config = _base_config(fallback_llm=(
+        '{"provider": "openrouter", "model": "deepseek/deepseek-v4-flash", '
+        '"reasoning": {"exclude": true}}'
+    ))
+
+    with pytest.raises(RuntimeError, match="zero citations"):
+        claude.generate_script(config, "2026-07-06", "am")
+
+    # Exception propagates before the decision log would be written, same
+    # as the anthropic-only-config hard-abort case.
+    assert not _decision_path(tmp_path).exists()
+
+
+def test_tier3_skipped_when_configured_fallback_is_already_anthropic(monkeypatch, tmp_path):
+    """When no ``fallback_llm`` is configured, tier 2 already IS the
+    Anthropic default — tier 3 must not fire a second, redundant Anthropic
+    call. Unchanged pre-existing 2-tier behavior."""
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+    plan = {
+        "openrouter": [
+            _grounded(provider="openrouter", model="moonshotai/kimi-k2.6",
+                      text="", n_searches=10),
+        ],
+        "anthropic": [
+            _grounded(provider="anthropic", model="claude-haiku-4-5",
+                      text="", n_searches=5),
+        ],
+    }
+    FakeClient, calls = _client_factory_with_capture(plan)
+    monkeypatch.setattr(claude, "LLMClient", FakeClient)
+
+    with pytest.raises(SystemExit):
+        claude.generate_script(_base_config(), "2026-07-06", "am")
+
+    # Exactly one anthropic call (tier 2), not two — no redundant tier 3.
+    anthropic_calls = [p for p, _ in calls if p == "anthropic"]
+    assert len(anthropic_calls) == 1
 
 
 def test_no_fallback_when_primary_is_already_anthropic(monkeypatch, tmp_path):
