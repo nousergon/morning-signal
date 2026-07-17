@@ -45,6 +45,10 @@
 #   instance's own IAM role — self-hosted runners support that unchanged.
 set -uo pipefail
 
+# Repo-specific toolchain needs (2026-07-17, multi-version Python/Node fix).
+EXTRA_PYTHON_VERSIONS="${EXTRA_PYTHON_VERSIONS:-3.9 3.10 3.11}"
+NEEDS_NODE_VERSIONS="${NEEDS_NODE_VERSIONS:-}"
+
 MORNING_SIGNAL_RUNNER_JOB_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -130,7 +134,7 @@ fi
 # supplied later to config.sh) ─────────────────────────────────────────────────
 IMDS_TOKEN="$(curl -sS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' http://169.254.169.254/latest/api/token 2>/dev/null)"
 INSTANCE_ID="$(curl -sS -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)"
-RUNNER_NAME="config-spot-${INSTANCE_ID:-$(date +%s)}"
+RUNNER_NAME="morning-signal-spot-${INSTANCE_ID:-$(date +%s)}"
 
 # ── Mint a just-in-time (JIT) runner config (config#2653 — replaces the old
 # registration-token + config.sh two-round-trip handshake) ────────────────────
@@ -270,6 +274,120 @@ ln -sf python3.12 "${PY_CACHE_DIR}/bin/python"
 touch "${TOOL_CACHE_DIR}/Python/${PY_FULL_VERSION}/x64.complete"
 log "pre-populated tool cache for python ${PY_FULL_VERSION} at ${PY_CACHE_DIR}"
 
+# ── Multi-version Python tool-cache pre-population (2026-07-17) ────────────
+# Extends the single-version fix above to matrix/multi-toolchain jobs. Uses
+# uv's own portable Python distribution (python-build-standalone) — NOT dnf
+# — because AL2023's dnf repos don't reliably carry every version a repo's
+# CI matrix needs (3.9/3.10/3.11/3.13/3.14 alongside the dnf-default 3.12),
+# and python-build-standalone builds are statically-linked/relocatable,
+# sidestepping distro package availability entirely. EXTRA_PYTHON_VERSIONS
+# is a space-separated env var (e.g. "3.9 3.10 3.11 3.13 3.14"); empty/unset
+# is a clean no-op for repos that only need the dnf-default 3.12.
+if [ -n "${EXTRA_PYTHON_VERSIONS:-}" ]; then
+  log "installing uv for portable multi-version Python (${EXTRA_PYTHON_VERSIONS})..."
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh >/dev/null 2>&1 \
+    || log "WARN: uv install failed — extra python versions will be unavailable"
+  # CRITICAL: everything below runs AS the non-root run user, not root.
+  # Confirmed live 2026-07-17 (3 failed CI attempts before finding this):
+  # /root is mode 750 (dr-xr-x---) on this AMI — the non-root user that
+  # actually executes GHA job steps has ZERO access to anything under
+  # /root, including via a symlink pointing there (the tool-cache symlink
+  # trick alone is not enough; the symlink TARGET must also be reachable).
+  # `uv python install` + get-pip.py run as root landed python/pip under
+  # /root/.local/share/uv/... — permanently inaccessible to the job.
+  # Running the same commands via runuser installs everything under
+  # ${RUN_USER_HOME}/.local/share/uv/... instead, which the run user owns.
+  if command -v uv >/dev/null 2>&1; then
+    for PYVER in $EXTRA_PYTHON_VERSIONS; do
+      runuser -u "$MORNING_SIGNAL_RUNNER_USER" -- env HOME="$RUN_USER_HOME" PATH="/usr/local/bin:${PATH}" \
+        uv python install "$PYVER" >/dev/null 2>&1 || { log "WARN: uv python install ${PYVER} failed"; continue; }
+      PYBIN="$(runuser -u "$MORNING_SIGNAL_RUNNER_USER" -- env HOME="$RUN_USER_HOME" PATH="/usr/local/bin:${PATH}" \
+        uv python find "$PYVER" 2>/dev/null)"
+      if [ -z "$PYBIN" ] || [ ! -x "$PYBIN" ]; then
+        log "WARN: uv could not locate an installed interpreter for ${PYVER}"
+        continue
+      fi
+      # `uv python find` returns a path through uv's abbreviated major.minor
+      # alias directory (e.g. cpython-3.11-...), but get-pip.py installs
+      # pip relative to sys.executable's RESOLVED path, which lands in the
+      # full-version directory (cpython-3.11.15-...) — a DIFFERENT real
+      # directory, confirmed live 2026-07-17 (setup-python found the
+      # interpreter, get-pip.py reported success, yet the pip symlink still
+      # pointed nowhere because dirname on the alias path never matched
+      # where pip actually landed). Resolve the real path before computing
+      # anything relative to it.
+      PYBIN="$(readlink -f "$PYBIN")"
+      EXTRA_PY_FULL="$(runuser -u "$MORNING_SIGNAL_RUNNER_USER" -- "$PYBIN" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+      # Remove uv's PEP 668 EXTERNALLY-MANAGED marker from this interpreter.
+      # --break-system-packages (used below for OUR OWN get-pip.py call) only
+      # covers pip invocations we control — confirmed live 2026-07-17 that
+      # the WORKFLOW's own `pip install -e ".[dev]"` step (which we can't
+      # modify — it's the repo's actual test command) hit the identical
+      # "externally-managed-environment" refusal, since the marker file
+      # itself is still present after get-pip.py runs. Since this is a
+      # dedicated, ephemeral, single-purpose CI box — not a shared system
+      # Python PEP 668 exists to protect — removing the marker so ALL pip
+      # calls behave normally is the correct fix, not threading
+      # --break-system-packages through every repo's own workflow commands.
+      EXTRA_PY_PREFIX="$(runuser -u "$MORNING_SIGNAL_RUNNER_USER" -- "$PYBIN" -c 'import sys; print(sys.prefix)')"
+      find "$EXTRA_PY_PREFIX" -name EXTERNALLY-MANAGED -delete 2>/dev/null || true
+      EXTRA_PY_CACHE_DIR="${TOOL_CACHE_DIR}/Python/${EXTRA_PY_FULL}/x64"
+      mkdir -p "${EXTRA_PY_CACHE_DIR}/bin"
+      ln -sf "$PYBIN" "${EXTRA_PY_CACHE_DIR}/bin/python${PYVER}"
+      ln -sf "$PYBIN" "${EXTRA_PY_CACHE_DIR}/bin/python3"
+      ln -sf "$PYBIN" "${EXTRA_PY_CACHE_DIR}/bin/python"
+      # uv-installed interpreters do NOT ship pip as a sibling binary the way
+      # dnf-installed ones do (uv's own philosophy is "use uv, not pip") —
+      # confirmed live 2026-07-17: setup-python found the cached interpreter
+      # fine, then `pip install` failed with "pip: command not found".
+      # ensurepip ALSO fails outright on a uv-managed interpreter (confirmed
+      # live) — it's marked PEP 668 "externally managed" by uv, and
+      # ensurepip's internal pip invocation refuses without an override it
+      # has no flag for. get-pip.py DOES accept --break-system-packages,
+      # which is the correct override here: this is a dedicated, ephemeral,
+      # single-purpose CI box, not a shared system Python PEP 668 protects.
+      curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip-${PYVER}.py \
+        && chown "${MORNING_SIGNAL_RUNNER_USER}:${MORNING_SIGNAL_RUNNER_USER}" /tmp/get-pip-${PYVER}.py \
+        && runuser -u "$MORNING_SIGNAL_RUNNER_USER" -- "$PYBIN" /tmp/get-pip-${PYVER}.py --break-system-packages --quiet \
+        || log "WARN: get-pip.py failed for ${EXTRA_PY_FULL}"
+      EXTRA_PIPBIN="$(dirname "$PYBIN")/pip3"
+      [ -x "$EXTRA_PIPBIN" ] || EXTRA_PIPBIN="$(dirname "$PYBIN")/pip${PYVER}"
+      [ -x "$EXTRA_PIPBIN" ] || EXTRA_PIPBIN="$(dirname "$PYBIN")/pip"
+      [ -x "$EXTRA_PIPBIN" ] && ln -sf "$EXTRA_PIPBIN" "${EXTRA_PY_CACHE_DIR}/bin/pip3"
+      [ -x "$EXTRA_PIPBIN" ] && ln -sf "$EXTRA_PIPBIN" "${EXTRA_PY_CACHE_DIR}/bin/pip"
+      [ -x "$EXTRA_PIPBIN" ] || log "WARN: no pip binary found for ${EXTRA_PY_FULL} after get-pip.py"
+      touch "${TOOL_CACHE_DIR}/Python/${EXTRA_PY_FULL}/x64.complete"
+      log "pre-populated tool cache for python ${EXTRA_PY_FULL} (requested ${PYVER}) via uv"
+    done
+  fi
+fi
+
+# ── Node.js tool-cache pre-population (same mechanism as Python above,
+# 2026-07-17) ────────────────────────────────────────────────────────────
+# NEEDS_NODE_VERSIONS is a space-separated env var of major versions this
+# repo's CI needs (e.g. "20"); empty/unset is a clean no-op.
+if [ -n "${NEEDS_NODE_VERSIONS:-}" ]; then
+  log "installing Node.js (${NEEDS_NODE_VERSIONS})..."
+  for NODEMAJ in $NEEDS_NODE_VERSIONS; do
+    dnf install -y -q "nodejs${NODEMAJ}" >/dev/null 2>&1 \
+      || dnf install -y -q nodejs >/dev/null 2>&1 \
+      || log "WARN: nodejs${NODEMAJ} dnf install failed"
+    if command -v node >/dev/null 2>&1; then
+      NODE_FULL="$(node --version | sed 's/^v//')"
+      NODE_CACHE_DIR="${TOOL_CACHE_DIR}/node/${NODE_FULL}/x64"
+      mkdir -p "${NODE_CACHE_DIR}/bin"
+      for bin in node npm npx; do
+        NODEBIN="$(command -v "$bin" 2>/dev/null)"
+        [ -n "$NODEBIN" ] && ln -sf "$NODEBIN" "${NODE_CACHE_DIR}/bin/${bin}"
+      done
+      touch "${TOOL_CACHE_DIR}/node/${NODE_FULL}/x64.complete"
+      log "pre-populated tool cache for node ${NODE_FULL} (requested major ${NODEMAJ})"
+    else
+      log "WARN: node binary not found after install attempt for major ${NODEMAJ}"
+    fi
+  done
+fi
+
 chown -R "${MORNING_SIGNAL_RUNNER_USER}:${MORNING_SIGNAL_RUNNER_USER}" "$RUNNER_DIR"
 
 log "starting run.sh with JIT config (config#2653) — name=${RUNNER_NAME} job_id=${MORNING_SIGNAL_RUNNER_JOB_ID:-n/a}; no separate config.sh step (--jitconfig writes the settings files directly and implies --ephemeral)"
@@ -280,8 +398,19 @@ log "starting run.sh with JIT config (config#2653) — name=${RUNNER_NAME} job_i
 # not found`). Job steps inherit run.sh's baseline PATH (layered with
 # whatever setup-python etc. append via GITHUB_PATH later), so this must be
 # set here, not per-step.
+# PIP_USER=1 (2026-07-17): forces every pip install during the job to use
+# the --user scheme regardless of whether it COULD write directly. Needed
+# for uv-managed interpreters specifically — since the run user OWNS a
+# uv-installed python's own site-packages (unlike dnf-installed 3.12's
+# root-owned /usr), pip does a regular (non-user) install there and lands
+# console scripts (pytest, etc.) inside uv's own managed directory tree,
+# which is never added to PATH — confirmed live as a second-order failure
+# after fixing the externally-managed-environment block above. Forcing
+# --user normalizes ALL interpreters (dnf- and uv-installed alike) onto
+# the same ~/.local/bin PATH entry already set up below.
 runuser -u "$MORNING_SIGNAL_RUNNER_USER" -- /usr/bin/env HOME="$RUN_USER_HOME" \
   RUNNER_TOOL_CACHE="$TOOL_CACHE_DIR" AGENT_TOOLSDIRECTORY="$TOOL_CACHE_DIR" \
+  PIP_USER=1 \
   PATH="${RUN_USER_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   "${RUNNER_DIR}/run.sh" --jitconfig "$JIT_CONFIG"
 RUNNER_EXIT=$?
