@@ -12,7 +12,11 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Self-hosted ephemeral EC2-spot runner (morning-signal-runner-dispatcher
+    # Lambda, nousergon-data infrastructure/lambdas/morning-signal-runner-dispatcher)
+    # — multi-version Python tool-cache fix verified live on telos (7 rounds
+    # of real bugs found+fixed, see reference_uv_python_self_hosted_runner_fix_sequence_260717).
+    runs-on: [self-hosted, morning-signal-spot]
     strategy:
       fail-fast: false
       matrix:
