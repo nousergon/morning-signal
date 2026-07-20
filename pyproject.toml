@@ -60,7 +60,22 @@ dependencies = [
     # `<|tool_calls_section_begin|>...`) is trusted as a valid final
     # answer instead of triggering the existing fallback-to-secondary-
     # provider path, and a garbage/empty-content episode ships live.
-    "krepis[anthropic,openai]>=0.12.2",
+    # >=0.16.2 for two fixes to complete_grounded/_structured_openai
+    # (krepis#38, krepis-PR39), both confirmed live 2026-07-20:
+    # (1) an unresolved-tool-call/control-token leak now retries the SAME
+    # call up to `attempts=2` times before raising — three live incidents
+    # (7/14, 7/16, 7/20) each showed a bare retry resolves it, so this
+    # repo's cascade no longer burns its tier-2 fallback on a one-shot
+    # sampling glitch. (2) a non-JSON OpenRouter transport response
+    # (invisible to the SDK's own retry logic) previously bubbled up as a
+    # raw json.JSONDecodeError — a ValueError, NOT a RuntimeError/
+    # LLMError — which silently skipped past this repo's `except
+    # RuntimeError` tier-2/tier-3 fallback gates in claude.py instead of
+    # engaging them; this is what actually lost the 2026-07-20 AM episode
+    # despite the morning-signal#119 tier-3 forced-search last-resort
+    # existing specifically to catch it. Both failure classes now raise a
+    # properly-typed LLMError so the existing cascade engages correctly.
+    "krepis[anthropic,openai]>=0.16.2",
     "pydantic>=2.0",
     # Pydantic v2 cannot eval PEP 604 `str | None` field annotations under
     # Python 3.9 even with `from __future__ import annotations` (mirrors krepis).
