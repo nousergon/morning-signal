@@ -1,0 +1,42 @@
+name: pip-audit
+
+# Blocking dependency-vulnerability gate on morning-signal's own declared deps.
+# alpha-engine-config#2530 (fleet pip-audit standardization).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Daily at 14:00 UTC — CVE feeds publish on a rolling cadence; daily
+    # is the smallest cadence that's actually useful (mirrors mnemon's
+    # pip-audit.yml and nousergon-lib's/krepis's/vires's/telos's, all
+    # config#2530).
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit declared dependencies
+        # `pip-audit . --strict` audits only the deps declared in
+        # pyproject.toml's base `dependencies`. Any vulnerability in a
+        # runtime dep fails the workflow; add `--ignore-vuln <ID>` here
+        # with a reason comment if a transitive dep has no fix release
+        # available.
+        run: pip-audit --strict .
