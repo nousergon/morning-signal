@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The README's `coverage-96%` badge was hand-set and wrong** — the suite
+  measures 92.54%. A badge whose value a human types renders identically to a
+  measured one, so a reader cannot tell them apart, and it becomes false the
+  moment reality moves without anyone editing a file
+  (repository-baseline-policy.md §5.1). The badge now renders a shields.io
+  `endpoint` document that `scripts/publish_coverage_badge.sh` rewrites from
+  the same `.coverage` file the gate reads, on every push to `main`. The
+  `python` and `License` badges likewise now come from PyPI metadata and the
+  repo's own LICENSE rather than from typed literals.
+- **The coverage floor was 80% against 92.54% measured**, so 12 points of
+  coverage could be lost without the gate noticing. Raised to 92 as a ratchet,
+  and `tests/test_coverage_scope.py` now asserts the measurement *scope* —
+  the way a coverage gate stops being honest is by narrowing what it measures
+  rather than by lowering the number, which reads as an improvement in every
+  report (§4.2 C5).
+
 - **Every AM episode since the 2026-08-13 litellm_proxy router migration
   aired unexecuted tool-call XML instead of a script.** Every prompt
   (`prompt.md`/`prompt_weekend.md`/`prompt_public.md`) unconditionally

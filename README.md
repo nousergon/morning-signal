@@ -1,9 +1,9 @@
 # Morning Signal
 
-[![CI](https://github.com/cipher813/morning-signal/actions/workflows/test.yml/badge.svg)](https://github.com/cipher813/morning-signal/actions/workflows/test.yml)
-[![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen.svg)](#tests)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/nousergon/morning-signal/actions/workflows/test.yml/badge.svg)](https://github.com/nousergon/morning-signal/actions/workflows/test.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nousergon/morning-signal/badges/coverage.json)](https://github.com/nousergon/morning-signal/actions/workflows/test.yml)
+[![Python](https://img.shields.io/pypi/pyversions/morning-signal)](https://pypi.org/project/morning-signal/)
+[![License](https://img.shields.io/github/license/nousergon/morning-signal)](LICENSE)
 
 Auto-generated daily briefing podcast. A scheduler fires once daily at 5 AM Pacific, Claude with web search writes the script, a TTS engine (Amazon Polly or Google Chirp3 HD) converts it to audio, and the MP3 + RSS feed publish to S3. Subscribe in any podcast app — episodes just show up on your phone.
 
@@ -63,7 +63,7 @@ morning-signal/
 ### 1. Install
 
 ```bash
-git clone https://github.com/cipher813/morning-signal.git && cd morning-signal
+git clone https://github.com/nousergon/morning-signal.git && cd morning-signal
 python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
@@ -276,7 +276,7 @@ is needed for the speed adjustment.
 .venv/bin/pytest --cov
 ```
 
-The suite uses `moto` for boto3 mocking and an inline anthropic mock — no real API calls. Coverage target: 80%+.
+The suite uses `moto` for boto3 mocking and an inline anthropic mock — no real API calls. Coverage is measured over the whole `morning_signal` package and enforced: `pytest` exits non-zero below the floor in [`pytest.ini`](pytest.ini), and the badge above renders the figure CI last measured on `main`.
 
 ## Contributing
 

@@ -21,6 +21,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The badge-publish step below writes `coverage.json` on the orphan
+    # `badges` branch through the contents API. Nothing else in this workflow
+    # writes, and the token is scoped no wider than that.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -76,6 +81,21 @@ jobs:
 
       - name: Run pytest with coverage
         run: pytest
+
+      # repository-baseline-policy.md §5.1 — a badge whose value is written by
+      # a human is forbidden: it renders identically to a real one and becomes
+      # false the moment reality moves without anyone editing a file. This repo
+      # carried a hand-set `coverage-96%` badge while the suite measured
+      # 92.55%. The README badge now renders whatever this step last published,
+      # derived from the same `.coverage` file the pytest.ini floor gates on.
+      #
+      # Pushes to main only: a pull-request run measures a tree that is not yet
+      # what a reader of the README is looking at.
+      - name: Publish coverage badge
+        if: matrix.python-version == '3.11' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/publish_coverage_badge.sh
 
       - name: Upload coverage to artifact
         if: matrix.python-version == '3.11'
