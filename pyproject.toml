@@ -138,9 +138,9 @@ google = [
 morning-signal = "morning_signal.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/cipher813/morning-signal"
-Repository = "https://github.com/cipher813/morning-signal"
-Issues = "https://github.com/cipher813/morning-signal/issues"
+Homepage = "https://github.com/nousergon/morning-signal"
+Repository = "https://github.com/nousergon/morning-signal"
+Issues = "https://github.com/nousergon/morning-signal/issues"
 
 [tool.hatch.version]
 path = "src/morning_signal/__init__.py"

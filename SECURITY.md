@@ -4,7 +4,7 @@
 
 If you find a security vulnerability in Morning Signal, please report it privately:
 
-- **Preferred:** open a [GitHub Security Advisory](https://github.com/cipher813/morning-signal/security/advisories/new). This keeps the discussion private until a fix ships.
+- **Preferred:** open a [GitHub Security Advisory](https://github.com/nousergon/morning-signal/security/advisories/new). This keeps the discussion private until a fix ships.
 - **Alternative:** email `security@nousergon.ai` with a description and reproduction steps.
 
 Please **do not** open a public issue for security reports. I aim to acknowledge within 72 hours and ship a fix or mitigation within 14 days for high-severity issues.

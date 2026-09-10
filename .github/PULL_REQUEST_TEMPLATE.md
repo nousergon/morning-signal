@@ -14,3 +14,10 @@
 ## Test plan
 
 <!-- How you verified this works. -->
+
+---
+
+**Prepared by:** _<!-- your name, or the model if AI-assisted -->_
+<!-- Required by pull-request-policy.md. A template in THIS repo shadows the
+     org default in `nousergon/.github`, which carries this field — so a local
+     template without it silently removes the attribution from every PR here. -->
