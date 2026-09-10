@@ -387,10 +387,10 @@ First public release on PyPI.
 - Requires Python 3.9+.
 - License: MIT.
 
-[Unreleased]: https://github.com/cipher813/morning-signal/compare/v0.1.1rc5...HEAD
-[0.1.1rc5]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc5
-[0.1.1rc4]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc4
-[0.1.1rc3]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc3
-[0.1.1rc2]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc2
-[0.1.1rc1]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.1rc1
-[0.1.0]: https://github.com/cipher813/morning-signal/releases/tag/v0.1.0
+[Unreleased]: https://github.com/nousergon/morning-signal/compare/v0.1.1rc5...HEAD
+[0.1.1rc5]: https://github.com/nousergon/morning-signal/releases/tag/v0.1.1rc5
+[0.1.1rc4]: https://github.com/nousergon/morning-signal/releases/tag/v0.1.1rc4
+[0.1.1rc3]: https://github.com/nousergon/morning-signal/releases/tag/v0.1.1rc3
+[0.1.1rc2]: https://github.com/nousergon/morning-signal/releases/tag/v0.1.1rc2
+[0.1.1rc1]: https://github.com/nousergon/morning-signal/releases/tag/v0.1.1rc1
+[0.1.0]: https://github.com/nousergon/morning-signal/releases/tag/v0.1.0

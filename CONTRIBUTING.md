@@ -5,7 +5,7 @@ Morning Signal is an open-source engine for generating a daily briefing podcast 
 ## Quick start
 
 ```bash
-git clone https://github.com/cipher813/morning-signal.git
+git clone https://github.com/nousergon/morning-signal.git
 cd morning-signal
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,google]"
@@ -28,8 +28,8 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the pipeline map and module guide.
 
 The two **most-wanted** contributions both chip away at the same goal — letting someone run Morning Signal with **only an Anthropic key, no AWS or GCP account**:
 
-- **[#60 — Local/offline TTS engine](https://github.com/cipher813/morning-signal/issues/60)** — add a `"local"` engine (e.g. pyttsx3 or Piper) alongside `tts_polly` / `tts_google`. `tts.synthesize()` is a clean dispatcher, so this is a self-contained add.
-- **[#61 — Zero-cloud output backend](https://github.com/cipher813/morning-signal/issues/61)** — publish the MP3 + `feed.xml` to a local directory (and serve it) instead of S3.
+- **[#60 — Local/offline TTS engine](https://github.com/nousergon/morning-signal/issues/60)** — add a `"local"` engine (e.g. pyttsx3 or Piper) alongside `tts_polly` / `tts_google`. `tts.synthesize()` is a clean dispatcher, so this is a self-contained add.
+- **[#61 — Zero-cloud output backend](https://github.com/nousergon/morning-signal/issues/61)** — publish the MP3 + `feed.xml` to a local directory (and serve it) instead of S3.
 
 These are deliberately left for contributors — the maintainer runs the cloud path daily and is keeping the maintained surface small, so local/offline backends are exactly where outside help moves the project most. Both issues describe the seam to build against.
 
