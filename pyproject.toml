@@ -126,6 +126,10 @@ dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
     "moto[ses,s3,sts,ssm]>=5.0.0",
+    # Consumer-side contract test for the news_digest_daily pinned schema
+    # (data-collector plan P-07, alpha-engine-config-I10870, D36) — test-only,
+    # not a runtime dependency of the package.
+    "jsonschema>=4.26.0",
 ]
 # Google Chirp3 HD TTS engine (config tts.engine: google). Kept optional so
 # Polly-only installs stay light; tts_google fails loud with an install hint
