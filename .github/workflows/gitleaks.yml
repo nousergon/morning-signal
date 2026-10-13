@@ -25,5 +25,5 @@ permissions:
 
 jobs:
   gitleaks:
-    uses: nousergon/nousergon-lib/.github/workflows/gitleaks-scan.yml@ac52b9ad5d1ed4c5475e27d888a58282dc2fb6f0
+    uses: nousergon/nousergon-lib/.github/workflows/gitleaks-scan.yml@6aeb9f99ea103d58ee7b024b8afa952ec98c357b
     secrets: inherit
