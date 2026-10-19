@@ -68,6 +68,39 @@ def parse_skip_dates(config: dict) -> frozenset[str]:
     return frozenset(validated)
 
 
+#: Default floor, in spoken words, below which a generated script is not an
+#: episode (alpha-engine-config-I11831). Measured basis: 30 AM editions
+#: 2026-09-03 -> 10-02 had a lowest *normal* script of ~758 words and one
+#: outlier of ~200 words that aired as a 53-second episode; the August
+#: short-output incident aired 25 s - 1 min episodes of <= ~296 words. 500 sits
+#: 2.5x above the outlier and 0.66x below the lowest normal edition. The value
+#: is the operator's call: override with ``min_script_words`` in config.
+DEFAULT_MIN_SCRIPT_WORDS = 500
+
+
+def resolve_min_script_words(config: dict, edition: str) -> int:
+    """Return the minimum script length, in words, for ``edition``.
+
+    ``min_script_words`` is either an int (all editions) or a mapping keyed by
+    effective edition (``am`` / ``pm`` / ``weekend``) with an optional
+    ``default`` key; an edition absent from the mapping gets
+    :data:`DEFAULT_MIN_SCRIPT_WORDS`. ``0`` disables the floor for that edition
+    (explicit operator choice). A malformed value (negative, non-integer, bool)
+    is logged and replaced by the default rather than silently disabling the
+    guard -- a typo must not be what removes it.
+    """
+    raw = config.get("min_script_words", DEFAULT_MIN_SCRIPT_WORDS)
+    if isinstance(raw, dict):
+        raw = raw.get(edition, raw.get("default", DEFAULT_MIN_SCRIPT_WORDS))
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        log.error(
+            f"min_script_words={raw!r} is not a non-negative integer; using "
+            f"the default {DEFAULT_MIN_SCRIPT_WORDS} for the {edition!r} edition."
+        )
+        return DEFAULT_MIN_SCRIPT_WORDS
+    return raw
+
+
 def load_prompt(weekend: bool = False) -> str:
     """Load the appropriate prompt for this edition.
 

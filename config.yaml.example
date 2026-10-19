@@ -114,6 +114,21 @@ claude_model: "claude-sonnet-4-6"  # legacy knob — feeds the default spec
 # ceiling, not a throttle. Omit to use the in-code default of 20.
 web_search_max_uses: 20
 
+# Minimum script length, in spoken words, below which generation ABORTS the
+# attempt (alpha-engine-config-I11831). A near-empty or truncated script that
+# passes every other guard used to go straight to TTS/publish and was announced
+# with the same check mark as a full episode (2026-09-21: ~200 words aired as a
+# 53-second episode). Below the floor the attempt is treated like the tool-call
+# and grounding guards: the fallback tier runs instead of the short script
+# airing, and a short episode that somehow publishes is flagged in the success
+# ping. Default 500 (~2:15 spoken): 2.5x the 09-21 outlier, 0.66x the lowest
+# normal edition in the 30 days measured (~758 words). Either an int for every
+# edition, or a mapping keyed by edition (am / pm / weekend) with an optional
+# ``default``; 0 disables the floor for that edition. A malformed value falls
+# back to the default rather than disabling the guard.
+# min_script_words: 500
+# min_script_words: {am: 500, pm: 500, weekend: 500}
+
 # Minimum web searches an edition must perform or generation ABORTS before
 # publish (fail-loud). A zero/low-search edition is almost always
 # model-confabulated rather than grounded in live news — this guard stops a

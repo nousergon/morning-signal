@@ -149,6 +149,9 @@ def _base_config(**overrides):
         "max_tokens": 4096,
         "web_search_max_uses": 20,
         "min_grounding_citations": 1,
+        # Fake scripts here are a few words; the length floor
+        # (alpha-engine-config-I11831) has its own tests at the bottom.
+        "min_script_words": 0,
     }
     cfg.update(overrides)
     return cfg
@@ -1395,3 +1398,112 @@ def test_configured_llm_wins_over_the_ssm_fail_closed_check(monkeypatch):
 
     assert spec.provider == "router"
     assert spec.model == "med"
+
+
+# ── min_script_words length floor (alpha-engine-config-I11831) ───────────────
+
+
+def _words(n):
+    return " ".join(["word"] * n)
+
+
+def _floor_plan(primary_words, fallback_words=None):
+    plan = {
+        "openrouter": [
+            _grounded(provider="openrouter", model="moonshotai/kimi-k2.6",
+                      text=_words(primary_words), n_searches=10),
+        ],
+    }
+    if fallback_words is not None:
+        plan["anthropic"] = [
+            _grounded(provider="anthropic", model="claude-haiku-4-5",
+                      text=_words(fallback_words), n_searches=5),
+        ]
+    return plan
+
+
+def test_script_below_floor_aborts_attempt_and_falls_back(monkeypatch, tmp_path):
+    """The 2026-09-21 class: a ~200-word script from a primary that did not
+    error aired as a 53-second episode. Below the floor the attempt hard-aborts
+    like the tool-call guard, and the fallback tier runs instead."""
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+    _mock_group_resolver(monkeypatch, {
+        _FALLBACK_GROUP: _compelled_edge("anthropic", "claude-haiku-4-5"),
+    })
+    monkeypatch.setattr(claude, "LLMClient", _client_factory(_floor_plan(49, 80)))
+
+    script = claude.generate_script(
+        _base_config(fallback_llm=_FALLBACK_LLM_CONFIG, min_script_words=50),
+        "2026-07-06", "am",
+    )
+
+    assert len(script.split()) >= 80
+    decision = json.loads(_decision_path(tmp_path).read_text())
+    assert decision["fell_back"] is True
+    assert decision["used_provider"] == "anthropic"
+    assert decision["primary_outcome"] is None  # the guard raised before an outcome existed
+
+
+def test_script_at_floor_passes_without_fallback(monkeypatch, tmp_path):
+    """Boundary: exactly ``min_script_words`` words is accepted (the check is
+    strictly 'below'). The opener the pipeline prepends does not count toward
+    the floor, so this also proves the floor is on the generated text."""
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+    monkeypatch.setattr(claude, "LLMClient", _client_factory(_floor_plan(50)))
+
+    script = claude.generate_script(
+        _base_config(min_script_words=50), "2026-07-06", "am",
+    )
+
+    assert len(script.split()) >= 50
+    decision = json.loads(_decision_path(tmp_path).read_text())
+    assert decision["fell_back"] is False
+    assert decision["primary_outcome"]["script_chars"] == len(_words(50))
+
+
+def test_script_below_floor_on_every_tier_fails_closed(monkeypatch, tmp_path):
+    """No tier produces an above-floor script: nothing airs (the raise reaches
+    the caller), rather than the short script being published."""
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+    _mock_group_resolver(monkeypatch, {
+        _FALLBACK_GROUP: _compelled_edge("anthropic", "claude-haiku-4-5"),
+    })
+    monkeypatch.setattr(claude, "LLMClient", _client_factory(_floor_plan(10, 20)))
+    monkeypatch.setattr(claude, "_alert_fallback_exhausted", lambda *a, **kw: None)
+
+    with pytest.raises(RuntimeError, match="below the 50-word floor"):
+        claude.generate_script(
+            _base_config(fallback_llm=_FALLBACK_LLM_CONFIG, min_script_words=50),
+            "2026-07-06", "am",
+        )
+
+
+def test_floor_default_is_enforced_when_config_is_silent(monkeypatch, tmp_path):
+    """With no ``min_script_words`` in config, the shipped default (500) holds."""
+    monkeypatch.setattr(claude._config, "DEFAULT_MIN_SCRIPT_WORDS", 500)
+    monkeypatch.setattr(claude._config, "EPISODES_DIR", tmp_path)
+    _mock_group_resolver(monkeypatch, {
+        _FALLBACK_GROUP: _compelled_edge("anthropic", "claude-haiku-4-5"),
+    })
+    monkeypatch.setattr(claude, "LLMClient", _client_factory(_floor_plan(499, 499)))
+    monkeypatch.setattr(claude, "_alert_fallback_exhausted", lambda *a, **kw: None)
+    cfg = _base_config(fallback_llm=_FALLBACK_LLM_CONFIG)
+    del cfg["min_script_words"]
+
+    with pytest.raises(RuntimeError, match="below the 500-word floor"):
+        claude.generate_script(cfg, "2026-07-06", "am")
+
+
+def test_resolve_min_script_words_shapes(monkeypatch):
+    from morning_signal.config import resolve_min_script_words as r
+
+    monkeypatch.setattr(claude._config, "DEFAULT_MIN_SCRIPT_WORDS", 500)
+    assert r({}, "am") == 500
+    assert r({"min_script_words": 700}, "pm") == 700
+    assert r({"min_script_words": 0}, "am") == 0  # explicit disable
+    cfg = {"min_script_words": {"am": 600, "weekend": 400, "default": 300}}
+    assert (r(cfg, "am"), r(cfg, "weekend"), r(cfg, "pm")) == (600, 400, 300)
+    assert r({"min_script_words": {"am": 600}}, "pm") == 500  # no default key
+    # malformed values never silently disable the guard
+    for bad in (-1, "500", 1.5, True, None):
+        assert r({"min_script_words": bad}, "am") == 500

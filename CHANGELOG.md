@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Episode scripts had no length floor** (alpha-engine-config-I11831). A
+  near-empty script that passed the tool-call, grounding and topic guards went
+  straight to TTS/publish and was announced with the same check mark as a full
+  episode (2026-09-21: ~200 words aired as 53 seconds). `generate_script` now
+  hard-aborts an attempt whose script is under `min_script_words` (default 500,
+  per-edition mapping supported, `0` disables), so the fallback tier runs
+  instead; the success ping now reports the floor and replaces the check mark
+  with a SHORT warning when a published script is under it.
 - **The README's `coverage-96%` badge was hand-set and wrong** — the suite
   measures 92.54%. A badge whose value a human types renders identically to a
   measured one, so a reader cannot tell them apart, and it becomes false the

@@ -177,6 +177,46 @@ def test_notify_success_posts_body_with_audio_and_script_metadata(
     assert "https://example.com/podcast/feed.xml" in body
 
 
+def _short_script_body(monkeypatch, tmp_episodes_dir, tmp_scripts_dir, n_words, config):
+    monkeypatch.setenv("FLOW_DOCTOR_SKIP_PREFLIGHT", "1")
+    from morning_signal import config as _config
+    monkeypatch.setattr(_config, "EPISODES_DIR", tmp_episodes_dir)
+    monkeypatch.setattr(_config, "SCRIPTS_DIR", tmp_scripts_dir)
+    monkeypatch.setattr("morning_signal.claude.is_non_trading_day", lambda d: False)
+    (tmp_scripts_dir / "2026-05-14-am.md").write_text(" ".join(["w"] * n_words))
+    fd, notifier = make_doctor(
+        {"notifications": {"enabled": True, "telegram_bot_token": "123:abc",
+                           "telegram_chat_id": -100}},
+        "am",
+    )
+    with patch.object(notifier, "send_raw", return_value="telegram:-100") as spy:
+        notify_success(notifier, _FakeArgs(), config, audio_path=None)
+    return spy.call_args[0][0]
+
+
+def test_notify_success_flags_script_below_floor(
+    monkeypatch, tmp_episodes_dir, tmp_scripts_dir
+):
+    """A short episode that somehow published is announced as short, not with
+    the same check mark as a full one (alpha-engine-config-I11831)."""
+    body = _short_script_body(
+        monkeypatch, tmp_episodes_dir, tmp_scripts_dir, 40, {"min_script_words": 500}
+    )
+    assert "SHORT" in body
+    assert "40 words" in body and "500-word floor" in body
+    assert body.startswith("⚠️") and "✅" not in body
+
+
+def test_notify_success_script_at_floor_keeps_check_mark(
+    monkeypatch, tmp_episodes_dir, tmp_scripts_dir
+):
+    body = _short_script_body(
+        monkeypatch, tmp_episodes_dir, tmp_scripts_dir, 500, {"min_script_words": 500}
+    )
+    assert body.startswith("✅") and "SHORT" not in body
+    assert "~500 words" in body and "floor 500" in body
+
+
 def test_notify_success_handles_missing_audio_path(
     monkeypatch, tmp_episodes_dir, tmp_scripts_dir
 ):

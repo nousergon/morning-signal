@@ -126,6 +126,21 @@ def make_doctor(
     return fd, telegram_notifier
 
 
+def _effective_edition(args) -> str:
+    """The edition key ``min_script_words`` is looked up under: ``weekend`` on a
+    non-trading day (mirrors ``claude.build_episode_request``), else the edition."""
+    try:
+        # Lazy: claude pulls in the LLM stack, and notify must stay importable
+        # without it.
+        from morning_signal.claude import is_non_trading_day
+
+        if is_non_trading_day(args.date):
+            return "weekend"
+    except Exception:  # noqa: BLE001 — a lookup failure must not block the ping
+        log.debug("notify: weekend lookup failed; using %r", args.edition, exc_info=True)
+    return args.edition
+
+
 def notify_success(
     notifier: Optional[TelegramNotifier],
     args,
@@ -142,8 +157,12 @@ def notify_success(
         return
 
     edition_tag = args.edition.upper()
-    parts = [f"✅ *{edition_tag} edition* for `{args.date}` ready.", ""]
+    # Headline is decided after the script length is known (below): a script
+    # under its floor must not be announced with the same check mark as a full
+    # one (alpha-engine-config-I11831). Placeholder keeps the body order.
+    parts = ["", ""]
 
+    short = False
     if audio_path and audio_path.exists():
         size_kb = audio_path.stat().st_size / 1024
         parts.append(f"Audio: `{audio_path.name}` ({size_kb:.0f} KB)")
@@ -157,10 +176,20 @@ def notify_success(
     if script_path.exists():
         words = len(script_path.read_text().split())
         speed = float(config.get("tts", {}).get("speed", 1.0))
+        floor = _config.resolve_min_script_words(config, _effective_edition(args))
+        short = bool(floor) and words < floor
         parts.append(
             f"Script: ~{words} words "
             f"(~{words / 150:.1f} min read; ~{words / 150 / speed:.1f} min audio)"
+            f"; floor {floor}"
         )
+        if short:
+            parts.append(
+                f"⚠️ SHORT: {words} words is below the {floor}-word floor "
+                f"(min_script_words) — this episode published anyway; check it."
+            )
+    mark = "⚠️" if short else "✅"
+    parts[0] = f"{mark} *{edition_tag} edition* for `{args.date}` ready."
 
     feed_url = config.get("base_url", "").rstrip("/") + "/feed.xml"
     if feed_url and feed_url != "/feed.xml":
