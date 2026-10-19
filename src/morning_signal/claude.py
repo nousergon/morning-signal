@@ -75,6 +75,42 @@ _TOOL_CALL_HALLUCINATION_RE = re.compile(
 )
 
 
+def _enforce_min_script_words(
+    text: str,
+    config: dict,
+    *,
+    llm_client: LLMClient,
+    effective_edition: str,
+    edition_label: str,
+    friendly_date: str,
+) -> None:
+    """Hard-abort THIS attempt when the script is shorter than the floor.
+
+    Nothing between ``generate_script`` and TTS/publish/notify compared the
+    script's length to anything (alpha-engine-config-I11831): a 200-word script
+    aired as a 53-second episode and was announced with the same check mark as
+    a 1,100-word one. Same contract as the tool-call and grounding guards: the
+    raise triggers ``generate_script``'s fallback tier rather than airing a
+    near-empty script. Unconditional -- it applies on the news-context-grounded
+    path too, where the grounding guards are skipped by construction.
+    ``min_script_words`` (see ``config.resolve_min_script_words``) sets the floor.
+    """
+    floor = _config.resolve_min_script_words(config, effective_edition)
+    words = len(text.split())
+    if floor and words < floor:
+        raise RuntimeError(
+            f"{edition_label} edition for {friendly_date}: "
+            f"provider={llm_client.spec.provider!r} model="
+            f"{llm_client.spec.model!r} produced a {words}-word script "
+            f"({len(text)} chars), below the {floor}-word floor "
+            f"(min_script_words) — refusing to publish"
+        )
+    log.info(
+        f"Script length check: {words} words >= floor {floor} "
+        f"({edition_label} edition, {friendly_date})"
+    )
+
+
 def verify_script_grounded(
     script: str,
     citations: list[dict] | None,
@@ -1293,6 +1329,16 @@ def _attempt_episode(
             f"{result.text[:200]!r} — refusing to publish"
         )
 
+    # Length floor (alpha-engine-config-I11831): runs here, before the
+    # grounding guards and the recovery pass, so a near-empty draft goes straight
+    # to the fallback tier instead of burning a recovery call. Re-checked below
+    # if the recovery pass replaces the draft.
+    _enforce_min_script_words(
+        result.text, config, llm_client=llm_client,
+        effective_edition=effective_edition, edition_label=edition_label,
+        friendly_date=friendly_date,
+    )
+
     # When the transport lacks server-side web search (litellm, openai,
     # direct), the pre-fetched news_context digest injected by
     # build_episode_request is the sole grounding source. Searches and
@@ -1466,6 +1512,14 @@ def _attempt_episode(
                     config, effective_edition, edition_label, date_str,
                     unmet, n_searches, budget,
                 )
+
+    # The recovery pass may have swapped in a different draft; the floor applies
+    # to whatever is about to be returned.
+    _enforce_min_script_words(
+        result.text, config, llm_client=llm_client,
+        effective_edition=effective_edition, edition_label=edition_label,
+        friendly_date=friendly_date,
+    )
 
     outcome = {
         "provider": result.provider,

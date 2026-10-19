@@ -23,6 +23,18 @@ def _hermetic_llm_env(monkeypatch):
     monkeypatch.delenv("MORNING_SIGNAL_LLM", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_default_script_floor(monkeypatch):
+    """Most tests drive ``generate_script`` with one-line fake scripts. Turn the
+    shipped default length floor (alpha-engine-config-I11831) off for them; the
+    floor's own tests set ``min_script_words`` explicitly or restore the default.
+    ``fresh_ge_module`` reloads ``morning_signal.config`` (which re-runs the
+    constant), so it re-applies this after its reload."""
+    from morning_signal import config as _config
+
+    monkeypatch.setattr(_config, "DEFAULT_MIN_SCRIPT_WORDS", 0)
+
+
 @pytest.fixture
 def tmp_episodes_dir(tmp_path: Path) -> Path:
     d = tmp_path / "episodes"
@@ -114,6 +126,7 @@ def fresh_ge_module(monkeypatch, tmp_episodes_dir, tmp_scripts_dir):
     from morning_signal import episode as _episode_mod
 
     importlib.reload(_config_mod)
+    monkeypatch.setattr(_config_mod, "DEFAULT_MIN_SCRIPT_WORDS", 0)
     importlib.reload(_aws_mod)
     importlib.reload(_episode_mod)
 
