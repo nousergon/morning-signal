@@ -1,0 +1,26 @@
+name: Provider direct-linkage guard
+
+# Reusable-workflow caller: see the header comment in nousergon/nousergon-lib's
+# own provider-linkage-guard.yml for the full rationale. Wired here by the
+# fleet coverage rollout (alpha-engine-config-I9295). Measured 2026-10-30
+# against this repo's main with --include-dist: 58 matches, all pre-cleared in
+# .provider-linkage-allowlist.yaml with a reason and an expiry. A new direct
+# provider linkage fails this check from day one instead of going undetected.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: caller-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    uses: nousergon/nousergon-lib/.github/workflows/provider-linkage-guard.yml@15dbb42f5737ed3a58a363f2daade65bd936d675
