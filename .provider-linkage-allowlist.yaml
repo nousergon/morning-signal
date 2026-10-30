@@ -1,0 +1,142 @@
+# .provider-linkage-allowlist.yaml — pre-cleared provider-linkage matches
+# (alpha-engine-config-I9295). Schema: nousergon-lib
+# scripts/provider_linkage_guard.py::load_allowlist. Measured 2026-10-30 on
+# main with --include-dist: 58 matches, 47 of them tests. Fleet production
+# addresses a krepis router group; the src/ entries serve the self-hosted
+# default and carry the short expiry.
+schema_version: 1
+entries:
+  - path: pyproject.toml
+    pattern: "anthropic:dist"
+    reason: >-
+      The package depends on the `anthropic` SDK directly: telemetry
+      type-hints `anthropic.types.Message` (cost/search telemetry), and the
+      self-hosted default `claude._anthropic_default_spec` dispatches through
+      krepis's anthropic transport. Also matches the PyPI `keywords` list.
+      An SSM (fleet) install must set `llm`, which names a krepis router
+      group (aws.py; claude.py raises LLMConfigError otherwise); a non-SSM
+      self-host install brings its own key. Short expiry: decide whether the
+      self-host default moves to a group before renewing.
+    expires: "2026-12-31"
+    tracking: alpha-engine-config-I9295
+  - path: src/morning_signal/aws.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Optional SSM hydration of `/morning-signal/anthropic-api-key` for the
+      self-hosted legacy default (`claude._anthropic_default_spec`). Never
+      blocks boot; a MORNING_SIGNAL_USE_SSM=1 install with `llm` unset raises
+      LLMConfigError instead of falling back to it. Fleet production addresses
+      a krepis router group.
+    expires: "2026-12-31"
+    tracking: alpha-engine-config-I9295
+  - path: src/morning_signal/aws.py
+    pattern: "openrouter:env_key"
+    reason: >-
+      Optional SSM hydration of `/morning-signal/openrouter-api-key` for the
+      OSS self-host default and an explicit openrouter pin on the `llm` flip
+      surface. Absent on most installs and never blocks boot; fleet production
+      addresses a krepis router group.
+    expires: "2026-12-31"
+    tracking: alpha-engine-config-I9295
+  - path: src/morning_signal/episode.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Startup diagnostic only: logs whether the self-host key is set and its
+      length, never its value. Reads no credential for a call.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: scripts/oss_bakeoff.py
+    pattern: "openrouter:env_key"
+    reason: >-
+      Operator-run bakeoff script (config#1659 Phase B shadow canary): refuses
+      to start without the key. Not on the production path.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/conftest.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_aws_paths.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_aws_paths.py
+    pattern: "openrouter:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_canary.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_claude_recovery.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_env_loading.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_llm_fallback.py
+    pattern: "deepseek:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_llm_fallback.py
+    pattern: "openrouter:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_oss_bakeoff.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_oss_bakeoff.py
+    pattern: "openrouter:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
+  - path: tests/test_schedule_override.py
+    pattern: "anthropic:env_key"
+    reason: >-
+      Test-only: sets or deletes the variable with a fake value to exercise
+      credential hydration, missing-key errors or a fallback spec. A test
+      fixture, not a call site.
+    expires: "2027-04-30"
+    tracking: alpha-engine-config-I9295
