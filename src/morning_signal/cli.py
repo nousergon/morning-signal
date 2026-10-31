@@ -301,7 +301,9 @@ def watchdog(
     from morning_signal.watchdog import (
         EpisodeMissing,
         EpisodeStale,
+        FeedUndelivered,
         check_episode_fresh,
+        check_feed_delivers,
         send_alert,
     )
 
@@ -358,7 +360,10 @@ def watchdog(
         last_modified = check_episode_fresh(
             config, date, edition, max_age_hours=max_age_hours
         )
-    except (EpisodeMissing, EpisodeStale) as exc:
+        # The MP3 alone is not the deliverable: subscribers read feed.xml
+        # (alpha-engine-config-I12901).
+        check_feed_delivers(config, date, edition)
+    except (EpisodeMissing, EpisodeStale, FeedUndelivered) as exc:
         message = (
             f"🚨 Morning Signal watchdog: {edition.upper()} episode for {date} "
             f"is MISSING/STALE — {exc}"
@@ -369,7 +374,7 @@ def watchdog(
         raise typer.Exit(code=1)
 
     log.info(
-        f"Watchdog OK: {edition} episode for {date} present "
+        f"Watchdog OK: {edition} episode for {date} present and in the feed "
         f"(LastModified={last_modified.isoformat()})."
     )
 

@@ -38,6 +38,15 @@ def _put_episode(date: str, edition: str, prefix: str = ""):
     s3.put_object(Bucket=BUCKET, Key=f"{pfx}episodes/{date}-{edition}.mp3", Body=b"\x00" * 64)
 
 
+def _put_feed(date: str, edition: str):
+    url = f"https://{BUCKET}.s3.{REGION}.amazonaws.com/episodes/{date}-{edition}.mp3"
+    body = (
+        '<?xml version="1.0"?><rss version="2.0"><channel><item><title>t</title>'
+        f'<enclosure url="{url}" length="64" type="audio/mpeg"/></item></channel></rss>'
+    )
+    boto3.client("s3", region_name=REGION).put_object(Bucket=BUCKET, Key="feed.xml", Body=body.encode())
+
+
 def test_episode_key_respects_prefix():
     assert watchdog.episode_key({}, "2026-06-10", "am") == "episodes/2026-06-10-am.mp3"
     assert (
@@ -110,8 +119,21 @@ def test_cli_watchdog_exits_zero_when_present(aws_env, _stub_bootstrap):
     from morning_signal.cli import app
 
     _put_episode("2026-06-10", "am")
+    _put_feed("2026-06-10", "am")
     result = CliRunner().invoke(app, ["watchdog", "--max-age-hours", "24"])
     assert result.exit_code == 0, result.output
+
+
+@mock_aws
+def test_cli_watchdog_exits_one_when_fresh_mp3_is_not_in_the_feed(aws_env, _stub_bootstrap):
+    """A fresh MP3 behind an old feed is undelivered (alpha-engine-config-I12901)."""
+    from typer.testing import CliRunner
+    from morning_signal.cli import app
+
+    _put_episode("2026-06-10", "am")
+    _put_feed("2026-06-09", "am")
+    result = CliRunner().invoke(app, ["watchdog", "--max-age-hours", "24"])
+    assert result.exit_code == 1, result.output
 
 
 @mock_aws

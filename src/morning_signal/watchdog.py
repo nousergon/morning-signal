@@ -16,7 +16,10 @@ failure modes that page nobody happen earlier or outside the process entirely:
    handler.
 
 This watchdog closes that gap by checking the *deliverable* rather than the
-process: is today's episode object present + fresh in S3? It is deliberately
+process: is today's episode object present + fresh in S3, AND does the
+subscribed ``feed.xml`` carry it with a reachable, non-empty enclosure
+(:func:`check_feed_delivers`)? A fresh MP3 behind an old feed is not a
+delivered episode. It is deliberately
 independent of the generate run. Run it on a timer shortly after the generate
 slot and alert if the episode is missing or stale.
 
@@ -87,6 +90,80 @@ def check_episode_fresh(
             f"(budget {max_age_hours:.1f}h) — last published {last_modified.isoformat()}"
         )
     return last_modified
+
+
+class FeedUndelivered(Exception):
+    """The subscribed feed does not deliver the expected episode.
+
+    Missing or malformed ``feed.xml``, no item for the expected date and
+    edition, or an enclosure whose object is missing or empty. A fresh MP3
+    beside an old feed is exactly this: subscribers never see the episode
+    (alpha-engine-config-I12901).
+    """
+
+
+def feed_key(config: dict) -> str:
+    """S3 key of the published feed, mirroring ``publish.publish_to_s3``."""
+    prefix = config.get("s3_prefix", "").strip("/")
+    if prefix:
+        prefix += "/"
+    return f"{prefix}feed.xml"
+
+
+def _is_missing(exc: Exception) -> bool:
+    resp = getattr(exc, "response", None)
+    code = str(resp.get("Error", {}).get("Code", "")) if isinstance(resp, dict) else ""
+    return code in ("404", "NoSuchKey", "NotFound") or "Not Found" in str(exc)
+
+
+def check_feed_delivers(config: dict, date_str: str, edition: str) -> str:
+    """Verify the feed subscribers read carries this episode; return its enclosure URL.
+
+    Reads the published ``feed.xml`` object (the origin ``base_url`` serves),
+    finds the item whose enclosure points at ``episodes/<date>-<edition>.mp3``,
+    and HEADs that object to confirm it exists and is non-empty. Raises
+    :class:`FeedUndelivered` for any delivery defect; other S3 errors
+    (auth, network) propagate, and callers treat them as failures too.
+    """
+    import xml.etree.ElementTree as ET
+
+    bucket = config["s3_bucket"]
+    region = config.get("s3_region", "us-west-2")
+    s3 = _aws._aws_client("s3", region_name=region)
+    fkey = feed_key(config)
+    try:
+        body = s3.get_object(Bucket=bucket, Key=fkey)["Body"].read()
+    except Exception as exc:  # noqa: BLE001 — narrow to "missing", re-raise rest
+        if _is_missing(exc):
+            raise FeedUndelivered(f"s3://{bucket}/{fkey} not found") from exc
+        raise
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as exc:
+        raise FeedUndelivered(f"s3://{bucket}/{fkey} is not well-formed XML: {exc}") from exc
+
+    ekey = episode_key(config, date_str, edition)
+    enclosure_url = None
+    for item in root.iter("item"):
+        enc = item.find("enclosure")
+        url = enc.get("url", "") if enc is not None else ""
+        if url.endswith("/" + ekey):
+            enclosure_url = url
+            break
+    if enclosure_url is None:
+        raise FeedUndelivered(
+            f"s3://{bucket}/{fkey} has no item whose enclosure is {ekey} — "
+            f"subscribers do not see the {date_str} {edition} episode"
+        )
+    try:
+        head = s3.head_object(Bucket=bucket, Key=ekey)
+    except Exception as exc:  # noqa: BLE001
+        if _is_missing(exc):
+            raise FeedUndelivered(f"feed enclosure s3://{bucket}/{ekey} not found") from exc
+        raise
+    if int(head.get("ContentLength", 0)) <= 0:
+        raise FeedUndelivered(f"feed enclosure s3://{bucket}/{ekey} is empty")
+    return enclosure_url
 
 
 def send_alert(config: dict, edition: str, message: str) -> bool:
