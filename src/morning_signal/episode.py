@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from morning_signal.notify import make_doctor, notify_success
 from morning_signal.schedule_override import load_schedule_override, record_applied
 from morning_signal.publish import publish_to_s3
 from morning_signal.tts import synthesize
+from morning_signal.watchdog import check_feed_delivers
 
 log = logging.getLogger("morning-signal")
 
@@ -49,10 +51,27 @@ def _derive_title(schedule_entry: dict | None) -> str | None:
     return None
 
 
+def _meta_path(date_str: str, edition: str) -> Path:
+    return _config.EPISODES_DIR / f"{_episode_stem(date_str, edition)}.json"
+
+
+def _write_meta(path: Path, meta: dict) -> None:
+    """Write episode metadata atomically: a crash leaves the old file or the new one."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(meta, indent=2))
+    os.replace(tmp, path)
+
+
 def save_metadata(
     date_str: str, edition: str, script_path: Path, audio_path: Path | None,
     title: str | None = None,
 ) -> None:
+    """Record a GENERATED episode. Publication is recorded separately.
+
+    ``published_at`` starts as None and is set only by :func:`mark_published`
+    after the subscribed feed is verified to carry the episode
+    (alpha-engine-config-I12901). Local audio is not delivery.
+    """
     meta = {
         "date": date_str,
         "edition": edition,
@@ -60,20 +79,56 @@ def save_metadata(
         "script_file": str(script_path),
         "audio_file": str(audio_path) if audio_path else None,
         "title": title,
+        "published_at": None,
     }
-    (_config.EPISODES_DIR / f"{_episode_stem(date_str, edition)}.json").write_text(json.dumps(meta, indent=2))
+    _write_meta(_meta_path(date_str, edition), meta)
 
 
-def _existing_episode(date_str: str, edition: str) -> bool:
-    """True if a complete episode already exists for this (date, edition)."""
-    meta_path = _config.EPISODES_DIR / f"{_episode_stem(date_str, edition)}.json"
+def _read_meta(date_str: str, edition: str) -> dict | None:
+    meta_path = _meta_path(date_str, edition)
     if not meta_path.exists():
-        return False
+        return None
     try:
         meta = json.loads(meta_path.read_text())
     except (json.JSONDecodeError, OSError):
-        return False
-    return bool(meta.get("audio_file"))
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def _episode_state(date_str: str, edition: str) -> str:
+    """``absent`` | ``generated`` (audio on disk, delivery unverified) | ``published``.
+
+    Metadata written before ``published_at`` existed has no such key; those
+    episodes went out under the old flow and stay ``published``, so the back
+    catalogue is never re-published. A pending episode whose audio file is
+    gone is ``absent``: there is nothing to resume from.
+    """
+    meta = _read_meta(date_str, edition)
+    if not meta or not meta.get("audio_file"):
+        return "absent"
+    if "published_at" not in meta or meta.get("published_at"):
+        return "published"
+    return "generated" if Path(meta["audio_file"]).is_file() else "absent"
+
+
+def _existing_episode(date_str: str, edition: str) -> bool:
+    """True if this (date, edition) was generated AND its delivery verified."""
+    return _episode_state(date_str, edition) == "published"
+
+
+def mark_published(date_str: str, edition: str, enclosure_url: str) -> None:
+    """Set the delivery checkpoint, after verification only."""
+    meta = _read_meta(date_str, edition)
+    if meta is None:
+        return
+    meta["published_at"] = datetime.now(timezone.utc).isoformat()
+    meta["published_enclosure"] = enclosure_url
+    _write_meta(_meta_path(date_str, edition), meta)
+
+
+def verify_publication(config: dict, date_str: str, edition: str) -> str:
+    """Raise unless the published feed carries this episode; return the enclosure URL."""
+    return check_feed_delivers(config, date_str, edition)
 
 
 def _default_edition() -> str:
@@ -341,12 +396,32 @@ def main():
         return
 
     # Front-door dedup: don't re-burn Claude+Polly+S3 on accidental re-runs.
-    if not args.publish_only and not args.force and _existing_episode(args.date, args.edition):
+    # Only a VERIFIED delivery counts as done. A generated-but-unpublished
+    # episode (a publish or verify failure last time) resumes publication
+    # from its existing audio with no LLM/TTS call (alpha-engine-config-I12901).
+    state = "absent" if (args.publish_only or args.force) else _episode_state(args.date, args.edition)
+    if state == "published":
         log.info(f"Episode {args.date}-{args.edition} already exists; skipping (use --force to regenerate).")
+        return
+    resume = state == "generated"
+    if resume and (args.script_only or args.no_publish):
+        log.info(
+            f"Episode {args.date}-{args.edition} is already generated and "
+            f"{'--script-only' if args.script_only else '--no-publish'} publishes "
+            f"nothing; skipping (use --force to regenerate)."
+        )
         return
 
     audio_path = None
     fresh_uploads: set[str] = set()
+    if resume:
+        audio_path = Path(_read_meta(args.date, args.edition)["audio_file"])
+        fresh_uploads.add(audio_path.name)
+        log.info(
+            f"Episode {args.date}-{args.edition} was generated but its delivery "
+            f"was never verified; resuming publication from {audio_path.name} "
+            f"(no script or TTS regeneration)."
+        )
     started = datetime.now()
     progress = _make_progress()
 
@@ -362,7 +437,7 @@ def main():
     try:
         with guard, progress:
             phase = progress.add_task("[bold blue]Initializing", total=None)
-            if not args.publish_only:
+            if not args.publish_only and not resume:
                 progress.update(phase, description="[bold blue]Generating script (Claude + web search)")
                 script = generate_script(
                     config, args.date, args.edition,
@@ -385,6 +460,14 @@ def main():
             if not args.script_only and not args.no_publish:
                 progress.update(phase, description="[bold blue]Publishing to S3")
                 publish_to_s3(config, fresh_uploads=fresh_uploads)
+                # The checkpoint follows VERIFIED delivery: the feed carries
+                # this episode and its enclosure is present and non-empty.
+                # Any failure above or here leaves the episode `generated`,
+                # so the next ordinary run resumes publication.
+                if _episode_state(args.date, args.edition) == "generated":
+                    progress.update(phase, description="[bold blue]Verifying feed delivery")
+                    enclosure = verify_publication(config, args.date, args.edition)
+                    mark_published(args.date, args.edition, enclosure)
 
             progress.update(phase, description="[bold green]Done", completed=1)
 

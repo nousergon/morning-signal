@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failed publish was never retried, and the watchdog could not see a stale feed** (alpha-engine-config-I12901, audit 2026-10-30 PROD-05). `save_metadata` wrote `audio_file` before `publish_to_s3` ran, and the front-door dedup treated any metadata with audio as a finished episode. A publish that failed once was therefore skipped by every later run. Episode metadata now records generation (`published_at: null`) separately from delivery. The delivery checkpoint is set only after `verify_publication` confirms that the published `feed.xml` carries an item for that date and edition and that its enclosure object exists and is non-empty. An episode that was generated but never verified resumes publication from its existing MP3 on the next ordinary run, with no script or TTS call. That covers failures at MP3 upload, at feed upload and at verification. `--no-publish`, `--script-only` and `--publish-only` keep their meaning: `--publish-only` also checkpoints a pending episode once verified. Metadata writes are atomic. Metadata written before this change, with no `published_at` key, counts as published. The watchdog now also runs `check_feed_delivers`, so a fresh MP3 behind a missing, malformed or old feed exits 1.
+
 - **Episode scripts had no length floor** (alpha-engine-config-I11831). A
   near-empty script that passed the tool-call, grounding and topic guards went
   straight to TTS/publish and was announced with the same check mark as a full
