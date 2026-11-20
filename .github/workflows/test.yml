@@ -20,7 +20,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: latest moved to Ubuntu 26.04, which has no
+    # Python 3.9 build in actions/python-versions, so the 3.9 leg (the
+    # package's declared floor, requires-python >=3.9) failed at setup-python.
+    runs-on: ubuntu-24.04
     # The badge-publish step below writes `coverage.json` on the orphan
     # `badges` branch through the contents API. Nothing else in this workflow
     # writes, and the token is scoped no wider than that.
